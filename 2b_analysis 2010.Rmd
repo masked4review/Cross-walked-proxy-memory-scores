@@ -1,0 +1,1119 @@
+---
+title: "Untitled"
+output: html_document
+date: "2026-04-07"
+---
+
+```{r}
+library(dplyr)
+library(haven)
+library(readr)
+library(table1)
+library(tidyr)
+library(lmerTest) 
+library(broom.mixed)
+library(mice)
+library(mitools)
+library(tidyverse)
+library(ggplot2)
+library(openxlsx)
+library(flextable)
+library(equate)
+library(rsample)
+library(dplyr)
+library(purrr)
+library(broom)
+library(yardstick)
+library(polycor)
+library(splines)
+library(geepack)
+```
+
+
+```{r}
+final_fit <- readRDS(
+  "final_fit.rds"
+)
+```
+
+
+```{r}
+trkr <- read_dta("trk2022tr_r.dta")
+
+names(trkr) <- tolower(names(trkr))
+trkr <- trkr %>% 
+  mutate(hhidpn = str_pad(paste(hhid, pn, sep = ""), 9, pad = "0"))
+
+```
+
+```{r}
+rand <- read_sas("randhrs1992_2022v1.sas7bdat")
+
+names(rand) <- tolower(names(rand))
+
+rand <- rand %>% 
+  mutate(hhidpn = str_pad(hhidpn,9,pad="0"))
+```
+
+
+
+```{r}
+#Read in all RAND fat files from 2010 to 2020 to prepare for analyzing trajectories of totoal word recall
+rand_files <- list(
+  "hd10f6b.sas7bdat",
+  "h12f3a.sas7bdat",
+  "h14f2b.sas7bdat",
+  "h16f2c.sas7bdat",
+  "h18f2c.sas7bdat",
+  "h20f1b.sas7bdat"
+)
+
+rand_years <- c(2010, 2012, 2014,2016, 2018, 2020)
+
+
+rand_list <- lapply(seq_along(rand_files), function(i) {
+  df <- read_sas(rand_files[[i]]) %>%
+    rename_with(tolower) %>%
+    mutate(hhidpn = str_pad(as.character(hhidpn), 9, pad = "0"))
+  df
+})
+
+
+names(rand_list) <- paste0("rand_", rand_years)
+
+list2env(rand_list, envir = .GlobalEnv)
+```
+
+
+#######2010 Proxy and Self Word Total Scores######
+
+
+```{r}
+# ma009: PROXY/SELF INTERVIEW
+table(rand_2010$ma009, exclude = NULL)
+
+rand_2010 <- rand_2010 %>%
+  mutate(ma009_group = case_when(
+    ma009 == 1        ~ "self",
+    ma009 %in% c(2,3) ~ "proxy"
+  ))
+
+table(rand_2010$ma009_group, exclude = NULL)
+```
+
+
+```{r}
+# Keep only self-respondents
+rand_2010_respondent <- rand_2010 %>%
+  filter(ma009_group == "self")
+
+# create 2010 wordtot
+summary(rand_2010_respondent$md174)
+summary(rand_2010_respondent$md184)
+
+rand_2010_respondent_clean <- rand_2010_respondent %>%
+  filter(!is.na(md174) & !is.na(md184)) %>%
+  mutate(wordtot_2010 = md174 + md184)
+```
+
+
+```{r}
+# Calculate 2010 Jorm score for proxy
+
+rand_2010_proxy <- rand_2010 %>%
+  filter(ma009_group == "proxy")
+
+# Select Jorm variables (md506-md553)
+suffixes <- paste0("d", 506:553)
+vars_to_keep <- paste0("m", suffixes)
+
+rand_2010_proxy <- rand_2010_proxy %>%
+  select(hhidpn, all_of(vars_to_keep))
+
+# Calculate Jorm score for each question
+jorm_start_vars <- seq(506, 553, by = 3)
+
+for (i in seq_along(jorm_start_vars)) {
+  d_a <- paste0("md", jorm_start_vars[i])
+  d_b <- paste0("md", jorm_start_vars[i] + 1)
+  d_c <- paste0("md", jorm_start_vars[i] + 2)
+  
+  score_var <- paste0("j", i, "score")
+  
+  rand_2010_proxy <- rand_2010_proxy %>%
+    mutate(
+      !!score_var := case_when(
+        .data[[d_a]] == 2 ~ 3,
+        .data[[d_b]] == 1 ~ 1,
+        .data[[d_b]] == 2 ~ 2,
+        .data[[d_c]] == 4 ~ 4,
+        .data[[d_c]] == 5 ~ 5,
+        TRUE ~ NA
+      )
+    )
+}
+
+rand_2010_score_proxy <- rand_2010_proxy %>%
+  rowwise() %>%
+  mutate(jorm_score_2010 = round(
+    mean(c_across(starts_with("j") & ends_with("score")), na.rm = TRUE), 3
+  )) %>%
+  ungroup()
+
+# Remove individuals with missing Jorm scores
+summary(rand_2010_score_proxy$jorm_score_2010)
+
+rand_2010_score_proxy_clean <- rand_2010_score_proxy %>%
+  filter(!is.na(jorm_score_2010))
+```
+
+
+```{r}
+# Calculate 2010 proxy word total
+trkr_2010 <- trkr %>% select(hhidpn, mage)
+
+rand_2010_score_proxy_clean <- rand_2010_score_proxy_clean %>%
+  left_join(trkr_2010, by = "hhidpn")
+
+summary(rand_2010_score_proxy_clean$mage)
+
+rand_2010_score_proxy_clean <- rand_2010_score_proxy_clean %>%
+  mutate(age_centered_75 = mage - 75) %>%
+  rename(inf1jorm_score = jorm_score_2010)
+
+rand_2010_score_proxy_clean$pred_wordtot_2010 <- predict(
+  final_fit, newdata = rand_2010_score_proxy_clean
+)
+
+summary(rand_2010_score_proxy_clean$pred_wordtot_2010)
+summary(rand_2010_respondent_clean$wordtot_2010)
+```
+######Calculate the proxy and self word total scores from 2012 to 2020######
+
+```{r}
+# 2012: na009  2014: oa009  2016: pa009  2018: qa009  2020: ra009
+# Recode interview type for 2012-2020
+years <- c(2012, 2014, 2016, 2018, 2020)
+var_names <- c("na009", "oa009", "pa009", "qa009", "ra009")
+
+for (i in seq_along(years)) {
+  year <- years[i]
+  var <- var_names[i]
+  group_var <- paste0(var, "_group")
+  
+  df <- get(paste0("rand_", year))
+  
+  cat("Year", year, "-", var, ":\n")
+  print(table(df[[var]], exclude = NULL))
+  cat("\n")
+  
+  df <- df %>%
+    mutate(
+      !!group_var := case_when(
+        .data[[var]] == 1        ~ "self",
+        .data[[var]] %in% c(2,3) ~ "proxy",
+        TRUE ~ NA
+      )
+    )
+  
+  cat("Year", year, "-", group_var, ":\n")
+  print(table(df[[group_var]], exclude = NULL))
+  cat("\n")
+  assign(paste0("rand_", year), df)
+}
+
+# Keep respondent only for each year
+for (i in seq_along(years)) {
+  year <- years[i]
+  var <- var_names[i]
+  group_var <- paste0(var, "_group")
+  
+  df <- get(paste0("rand_", year))
+  df_filtered <- df %>% filter(.data[[group_var]] == "self")
+  assign(paste0("rand_", year, "_respondent"), df_filtered)
+}
+```
+####self: word total####
+
+```{r}
+
+# 2012: nd174/nd184  2014: od174/od184  2016: pd174/pd184
+# 2018: qd174/qd184  2020: rd174/rd184
+prefixes <- c("n", "o", "p", "q", "r")
+
+for (i in seq_along(years)) {
+  year <- years[i]
+  prefix <- prefixes[i]
+  
+  var_immediate <- paste0(prefix, "d174")
+  var_delayed   <- paste0(prefix, "d184")
+  
+  df <- get(paste0("rand_", year, "_respondent"))
+  
+  cat("Year", year, "-", var_immediate, "summary:\n")
+  print(summary(df[[var_immediate]]))
+  cat("Year", year, "-", var_delayed, "summary:\n")
+  print(summary(df[[var_delayed]]))
+  
+  df_clean <- df %>%
+    filter(!is.na(.data[[var_immediate]]) & !is.na(.data[[var_delayed]]))
+  
+  assign(paste0("rand_", year, "_respondent_clean"), df_clean)
+}
+
+# Calculate word total score
+for (i in seq_along(years)) {
+  year <- years[i]
+  prefix <- prefixes[i]
+  
+  var_immediate <- paste0(prefix, "d174")
+  var_delayed   <- paste0(prefix, "d184")
+  wordtot_var   <- paste0("wordtot_", year)
+  
+  df <- get(paste0("rand_", year, "_respondent_clean"))
+  df <- df %>%
+    mutate(!!wordtot_var := .data[[var_immediate]] + .data[[var_delayed]])
+  
+  assign(paste0("rand_", year, "_respondent_clean"), df)
+}
+```
+###proxy: jorm score###
+
+```{r}
+# Filter proxy-only data for each year
+for (i in seq_along(years)) {
+  year <- years[i]
+  var <- var_names[i]
+  group_var <- paste0(var, "_group")
+  
+  df <- get(paste0("rand_", year))
+  df_proxy <- df %>% filter(.data[[group_var]] == "proxy")
+  assign(paste0("rand_", year, "_proxy"), df_proxy)
+}
+
+# Select Jorm variables for each year
+jorm_start_vars <- seq(506, 553, by = 3)
+suffixes <- paste0("d", 506:553)
+
+for (i in seq_along(years)) {
+  year <- years[i]
+  prefix <- prefixes[i]
+  
+  vars_to_keep <- paste0(prefix, suffixes)
+  
+  df <- get(paste0("rand_", year, "_proxy"))
+  vars_present <- intersect(vars_to_keep, names(df))
+  df_selected <- df %>% select(hhidpn, all_of(vars_present))
+  
+  assign(paste0("rand_", year, "_proxy"), df_selected)
+}
+
+# Calculate Jorm score for each year
+for (i in seq_along(years)) {
+  year <- years[i]
+  prefix <- prefixes[i]
+  
+  df <- get(paste0("rand_", year, "_proxy"))
+  df_score <- df
+  
+  for (j in seq_along(jorm_start_vars)) {
+    d_a <- paste0(prefix, "d", jorm_start_vars[j])
+    d_b <- paste0(prefix, "d", jorm_start_vars[j] + 1)
+    d_c <- paste0(prefix, "d", jorm_start_vars[j] + 2)
+    
+    score_var <- paste0("j", j, "score")
+    
+    df_score <- df_score %>%
+      mutate(
+        !!score_var := case_when(
+          .data[[d_a]] == 2 ~ 3,
+          .data[[d_b]] == 1 ~ 1,
+          .data[[d_b]] == 2 ~ 2,
+          .data[[d_c]] == 4 ~ 4,
+          .data[[d_c]] == 5 ~ 5,
+          TRUE ~ NA
+        )
+      )
+  }
+  
+  score_var_name <- paste0("jorm_score_", year)
+  
+  df_score <- df_score %>%
+    rowwise() %>%
+    mutate(
+      !!score_var_name := round(
+        mean(c_across(starts_with("j") & ends_with("score")), na.rm = TRUE), 3
+      )
+    ) %>%
+    ungroup()
+  
+  assign(paste0("rand_", year, "_score_proxy"), df_score)
+}
+
+# Check and clean missing Jorm scores
+for (year in years) {
+  df <- get(paste0("rand_", year, "_score_proxy"))
+  score_var <- paste0("jorm_score_", year)
+  
+  cat("Summary of", score_var, ":\n")
+  print(summary(df[[score_var]]))
+  cat("\n")
+  
+  df_clean <- df %>% filter(!is.na(.data[[score_var]]))
+  assign(paste0("rand_", year, "_score_proxy_clean"), df_clean)
+}
+```
+###proxy word total###
+
+```{r}
+#Extract the age variables for the corresponding wave from the trkr file, check for any NAs, and then merge it with the score_proxy_clean dataset for that year.
+for (i in seq_along(years)) {
+  year <- years[i]
+  prefix <- prefixes[i]
+  
+  age_var <- paste0(prefix, "age")
+  
+  trkr_filtered <- trkr %>% select(hhidpn, !!age_var)
+  
+  score_data <- get(paste0("rand_", year, "_score_proxy_clean"))
+  
+  merged_data <- score_data %>%
+    left_join(trkr_filtered, by = "hhidpn")
+  
+  cat("Summary of", age_var, ":\n")
+  print(summary(merged_data[[age_var]]))
+  cat("\n")
+  
+  assign(paste0("rand_", year, "_score_proxy_clean"), merged_data)
+}
+
+# Center age at 75, rename Jorm variable, predict word total
+for (i in seq_along(years)) {
+  year <- years[i]
+  prefix <- prefixes[i]
+  
+  age_var <- paste0(prefix, "age")
+  
+  df <- get(paste0("rand_", year, "_score_proxy_clean"))
+  
+  df <- df %>%
+    mutate(age_centered_75 = .data[[age_var]] - 75)
+  
+  score_var <- paste0("jorm_score_", year)
+  df <- df %>%
+    rename(inf1jorm_score = !!score_var)
+  
+  pred_var <- paste0("pred_wordtot_", year)
+  df <- df %>%
+    mutate(!!pred_var := predict(final_fit, newdata = df))
+  
+  assign(paste0("rand_", year, "_score_proxy_clean"), df)
+}
+```
+########Organize the data so that it includes the word total, predicted word total####
+
+
+```{r}
+# Baseline sample: keep respondents in 2010 aged >= 50
+trkr_2010 <- trkr %>% select(hhidpn, mage)
+
+rand_2010_respondent_clean <- rand_2010_respondent_clean %>%
+  left_join(trkr_2010, by = "hhidpn")
+
+summary(rand_2010_respondent_clean$mage)
+
+rand_2010_respondent_clean <- rand_2010_respondent_clean %>%
+  filter(mage >= 50)
+```
+
+
+```{r}
+# For respondent data in each follow-up year (2012-2020),
+# keep only those in the baseline sample
+years_all <- c(2012, 2014, 2016, 2018, 2020)
+
+hhidpn_2010 <- rand_2010_respondent_clean$hhidpn
+
+filtered_counts <- data.frame(year = integer(), filtered_n = integer())
+
+for (yr in years_all) {
+  df <- get(paste0("rand_", yr, "_respondent_clean"))
+  df_filtered <- df %>% filter(hhidpn %in% hhidpn_2010)
+  assign(paste0("rand_", yr, "_respondent_clean_filtered"), df_filtered)
+  
+  filtered_counts <- rbind(filtered_counts, data.frame(
+    year = yr,
+    filtered_n = nrow(df_filtered)
+  ))
+}
+print(filtered_counts)
+```
+
+
+```{r}
+# For proxy data in each follow-up year (2012-2020),
+# keep only those in the baseline sample
+filtered_score_proxy_counts <- data.frame(year = integer(), 
+                                           filtered_score_proxy_n = integer())
+
+for (yr in years_all) {
+  df <- get(paste0("rand_", yr, "_score_proxy_clean"))
+  df_filtered <- df %>% filter(hhidpn %in% hhidpn_2010)
+  assign(paste0("rand_", yr, "_score_proxy_clean_filtered"), df_filtered)
+  
+  filtered_score_proxy_counts <- rbind(filtered_score_proxy_counts, data.frame(
+    year = yr,
+    filtered_score_proxy_n = nrow(df_filtered)
+  ))
+}
+print(filtered_score_proxy_counts)
+```
+
+
+```{r}
+# Build wide dataset: start with baseline, left join each follow-up year
+
+# Start with baseline
+rand_respondent_all <- rand_2010_respondent_clean %>% 
+  select(hhidpn, wordtot_2010, mage)
+
+# Join respondent word totals for each follow-up year
+for (yr in years_all) {
+  df <- get(paste0("rand_", yr, "_respondent_clean_filtered"))
+  wordtot_var <- paste0("wordtot_", yr)
+  df_trimmed <- df %>% select(hhidpn, !!sym(wordtot_var))
+  rand_respondent_all <- rand_respondent_all %>%
+    left_join(df_trimmed, by = "hhidpn")
+}
+
+# Join proxy predicted word totals for each follow-up year
+for (yr in years_all) {
+  df <- get(paste0("rand_", yr, "_score_proxy_clean_filtered"))
+  pred_col <- paste0("pred_wordtot_", yr)
+  df_trimmed <- df %>% select(hhidpn, !!sym(pred_col))
+  rand_respondent_all <- rand_respondent_all %>%
+    left_join(df_trimmed, by = "hhidpn")
+}
+
+rand_respondent_all_proxy <- rand_respondent_all
+```
+
+
+```{r}
+# Create all_yr columns:
+# use respondent word total if available, otherwise use cross-walked proxy score
+year_all <- c(2012, 2014, 2016, 2018, 2020)
+
+for (yr in year_all) {
+  word_col <- paste0("wordtot_", yr)
+  pred_col <- paste0("pred_wordtot_", yr)
+  all_col  <- paste0("all_", yr)
+  
+  rand_respondent_all_proxy[[all_col]] <- ifelse(
+    !is.na(rand_respondent_all_proxy[[word_col]]),
+    rand_respondent_all_proxy[[word_col]],
+    rand_respondent_all_proxy[[pred_col]]
+  )
+}
+```
+
+
+
+
+```{r}
+######trajectory plots######
+
+# All years including baseline
+years_all2010 <- c(2010, 2012, 2014, 2016, 2018, 2020)
+
+# Add all_2010 = wordtot_2010 for baseline
+rand_respondent_all_proxy <- rand_respondent_all_proxy %>%
+  mutate(all_2010 = wordtot_2010)
+
+# Calculate mean respondent-only word total for each year
+mean_wordtot_df <- data.frame(
+  year = years_all2010,
+  mean_wordtot = sapply(years_all2010, function(yr) {
+    wt_col <- paste0("wordtot_", yr)
+    mean(rand_respondent_all_proxy[[wt_col]], na.rm = TRUE)
+  })
+)
+
+print(mean_wordtot_df)
+
+# Calculate mean cross-walked (respondent + proxy) word total for each year
+mean_all_df <- data.frame(
+  year = year_all,
+  mean_all_wordtot = sapply(year_all, function(yr) {
+    col <- paste0("all_", yr)
+    mean(rand_respondent_all_proxy[[col]], na.rm = TRUE)
+  })
+)
+
+# Add 2010 baseline
+mean_2010 <- mean(rand_respondent_all_proxy$wordtot_2010, na.rm = TRUE)
+
+mean_all_df <- rbind(
+  data.frame(year = 2010, mean_all_wordtot = mean_2010),
+  mean_all_df
+)
+
+mean_all_df <- mean_all_df[order(mean_all_df$year), ]
+
+print(mean_all_df)
+```
+
+
+```{r}
+# Merge and plot raw means (two lines: respondent only vs cross-walked)
+mean_combined_df <- full_join(mean_wordtot_df, mean_all_df, by = "year")
+
+plot_data <- mean_combined_df %>%
+  pivot_longer(cols = c(mean_wordtot, mean_all_wordtot),
+               names_to = "type",
+               values_to = "value") %>%
+  mutate(type = recode(type,
+    "mean_wordtot"     = "Word total score excluding Proxy",
+    "mean_all_wordtot" = "Word total score including Proxy"
+  ))
+
+ggplot(plot_data, aes(x = year, y = value, 
+                      color = type, shape = type, linetype = type)) +
+  geom_line(size = 1) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c("brown", "blue")) +
+  scale_shape_manual(values = c(15, 18)) +
+  scale_linetype_manual(values = c("dashed", "solid")) +
+  scale_x_continuous(breaks = seq(2010, 2020, by = 2), 
+                     limits = c(2010, 2020)) +
+  scale_y_continuous(limits = c(6, 12)) +
+  theme_minimal() +
+  labs(
+    x = NULL,
+    y = "Word total score",
+    color = NULL, shape = NULL, linetype = NULL
+  ) +
+  theme(
+    legend.position = "bottom",
+    text = element_text(size = 12)
+  )
+```
+
+```{r}
+#create race_ethnicity
+#race
+table(rand$raracem,exclude=NULL)
+rand$raracemf = factor(rand$raracem, 
+                                      levels = c(1,2,3), 
+                                      labels = c("White/Caucasian","Black/African American","Other"))
+table(rand$raracemf,exclude=NULL)
+
+
+
+#Hispanic
+table(rand$rahispan,exclude=NULL)
+rand$rahispanf = factor(rand$rahispan, 
+                                      levels = c(0,1), 
+                                      labels = c("Not Hispanic","Hispanic"))
+
+table(rand$rahispanf,exclude=NULL)
+
+
+rand <- rand %>%
+  mutate(race_ethnicity = case_when(
+    rahispanf == "Hispanic" ~ "Hispanic",
+    raracemf == "White/Caucasian" & rahispanf == "Not Hispanic" ~ "Non-Hispanic White",
+    raracemf == "Black/African American" & rahispanf == "Not Hispanic" ~ "Non-Hispanic Black",
+    raracemf == "Other" & rahispanf == "Not Hispanic" ~ "Non-Hispanic Other",
+    TRUE ~ NA
+  ))
+
+table(rand$race_ethnicity,exclude=NULL)
+```
+
+
+
+```{r}
+######IPW analyses#######
+
+# IPW waves: 2012-2020
+wave_years <- c(2012, 2014, 2016, 2018, 2020)
+wave_letters <- c("n", "o", "p", "q", "r")
+wave_numbers <- c(11, 12, 13, 14, 15)
+
+prepare_ipw_data <- function(year) {
+  wave_letter <- wave_letters[which(wave_years == year)]
+  wave_number <- wave_numbers[which(wave_years == year)]
+
+  respondent_name <- paste0("rand_", year, "_respondent_clean_filtered")
+  proxy_name      <- paste0("rand_", year, "_score_proxy_clean_filtered")
+  rand_year_name  <- paste0("rand_", year)
+
+  respondent <- get(respondent_name)
+  proxy      <- get(proxy_name)
+  rand_year  <- get(rand_year_name)
+
+  rand_wordtot <- respondent %>%
+    select(hhidpn, !!sym(paste0("wordtot_", year)))
+
+  rand_pred_wordtot <- proxy %>%
+    select(hhidpn, !!sym(paste0("pred_wordtot_", year)))
+
+  rand_wordtot_all <- full_join(rand_wordtot, rand_pred_wordtot, by = "hhidpn")
+
+  shlt_var <- paste0("r", wave_number, "shlt")
+  adl_var  <- paste0("r", wave_number, "adl5a")
+  iadl_var <- paste0("r", wave_number, "iadl5a")
+
+  rand_filter <- rand %>%
+    select(hhidpn, ragender, raedyrs, race_ethnicity,
+           !!sym(shlt_var), !!sym(adl_var), !!sym(iadl_var))
+
+  age_var     <- paste0(wave_letter, "age")
+  trkr_filter <- trkr %>%
+    select(hhidpn, age = !!sym(age_var))
+
+  group_var <- paste0(wave_letter, "a009_group")
+
+  ipw_data <- rand_wordtot_all %>%
+    left_join(rand_filter, by = "hhidpn") %>%
+    left_join(trkr_filter, by = "hhidpn") %>%
+    left_join(
+      rand_year %>% select(hhidpn, type_of_interview = !!sym(group_var)),
+      by = "hhidpn"
+    )
+
+  ipw_data$race_ethnicityf <- factor(
+    ipw_data$race_ethnicity,
+    levels = c("Non-Hispanic White", "Non-Hispanic Black",
+               "Hispanic", "Non-Hispanic Other")
+  )
+  ipw_data$ragenderf <- factor(ipw_data$ragender, 
+                                levels = c(1,2), 
+                                labels = c("Male","Female"))
+  ipw_data$srh <- case_when(
+    ipw_data[[shlt_var]] %in% c(4,5)   ~ 1,
+    ipw_data[[shlt_var]] %in% c(1,2,3) ~ 0,
+    TRUE ~ NA
+  )
+  ipw_data$srh <- factor(ipw_data$srh, levels = c(0,1),
+                          labels = c("Excellent/very good/good", "Fair/poor"))
+
+  assign(paste0("ipw_data_", year), ipw_data, envir = .GlobalEnv)
+  return(ipw_data)
+}
+
+lapply(wave_years, prepare_ipw_data)
+```
+
+
+```{r}
+# Drop rows with missing covariates
+drop_counts <- sapply(seq_along(wave_years), function(i) {
+  year     <- wave_years[i]
+  wave_num <- wave_numbers[i]
+
+  df <- get(paste0("ipw_data_", year))
+
+  vars <- c("age", "raedyrs", "race_ethnicityf", "ragenderf",
+            paste0("r", wave_num, "shlt"),
+            paste0("r", wave_num, "adl5a"),
+            paste0("r", wave_num, "iadl5a"))
+
+  sum(!complete.cases(df[, vars]))
+})
+
+drop_summary <- data.frame(year = wave_years, n_dropped = drop_counts)
+print(drop_summary)
+
+# Drop NA
+for (i in seq_along(wave_years)) {
+  year     <- wave_years[i]
+  wave_num <- wave_numbers[i]
+
+  df <- get(paste0("ipw_data_", year))
+
+  vars_to_check <- c("age", "raedyrs", "race_ethnicityf", "ragenderf",
+                     paste0("r", wave_num, "shlt"),
+                     paste0("r", wave_num, "adl5a"),
+                     paste0("r", wave_num, "iadl5a"))
+
+  clean_df <- df %>% filter(complete.cases(across(all_of(vars_to_check))))
+  assign(paste0("ipw_data_clean_", year), clean_df, envir = .GlobalEnv)
+}
+```
+
+
+```{r}
+# Fit logistic regression for each year
+for (i in seq_along(wave_years)) {
+  year     <- wave_years[i]
+  wave_num <- wave_numbers[i]
+
+  df      <- get(paste0("ipw_data_clean_", year))
+  adl_var  <- paste0("r", wave_num, "adl5a")
+  iadl_var <- paste0("r", wave_num, "iadl5a")
+
+  formula <- as.formula(paste0(
+    "type_of_interview == 'self' ~ age + raedyrs + race_ethnicityf + ragenderf + srh + ",
+    adl_var, " + ", iadl_var
+  ))
+
+  model <- glm(formula, data = df, family = binomial(link = "logit"))
+  assign(paste0("ipw_model_", year), model, envir = .GlobalEnv)
+}
+
+# Print model summaries
+for (year in wave_years) {
+  cat("======== Year:", year, "========\n")
+  print(summary(get(paste0("ipw_model_", year))))
+  cat("\n")
+}
+```
+
+
+```{r}
+# Compute IPW weights; calculate weighted means per year
+for (i in seq_along(wave_years)) {
+  year  <- wave_years[i]
+  model <- get(paste0("ipw_model_", year))
+  df    <- get(paste0("ipw_data_clean_", year))
+
+  df <- df %>%
+    mutate(
+      p_probself = predict(model, type = "response"),
+      ipw_weight = ifelse(type_of_interview == "self", 1 / p_probself, NA)
+    )
+
+  assign(paste0("ipw_data_clean_", year), df, envir = .GlobalEnv)
+}
+
+# Weighted means per year
+weighted_means_df <- data.frame(year = integer(), 
+                                 weighted_wordtotal_mean = numeric())
+
+for (year in wave_years) {
+  df <- get(paste0("ipw_data_clean_", year))
+  result <- df %>%
+    filter(type_of_interview == "self") %>%
+    summarise(weighted_wordtotal_mean = weighted.mean(
+      .data[[paste0("wordtot_", year)]],
+      w = ipw_weight
+    ))
+  result$year <- year
+  weighted_means_df <- bind_rows(weighted_means_df, result)
+}
+
+# Add 2010 baseline (weight = 1)
+weighted_means_df <- rbind(
+  data.frame(year = 2010, 
+             weighted_wordtotal_mean = mean(rand_2010_respondent_clean$wordtot_2010, 
+                                            na.rm = TRUE)),
+  weighted_means_df
+)
+
+weighted_means_df <- weighted_means_df[order(weighted_means_df$year), ]
+print(weighted_means_df)
+```
+
+
+```{r}
+########Final trajectory plot######
+
+# Reshape weighted means for plotting
+weighted_plot_data <- weighted_means_df %>%
+  rename(value = weighted_wordtotal_mean) %>%
+  mutate(type = "Respondents only, with IPW")
+
+# Merge all three into one plot dataset
+mean_combined_df <- full_join(mean_wordtot_df, mean_all_df, by = "year")
+
+plot_data <- mean_combined_df %>%
+  pivot_longer(cols = c(mean_wordtot, mean_all_wordtot),
+               names_to = "type",
+               values_to = "value") %>%
+  mutate(type = recode(type,
+    "mean_wordtot"     = "Respondent only",
+    "mean_all_wordtot" = "Respondents and cross-walked scores from proxies"
+  ))
+
+plot_data_combined <- bind_rows(plot_data, weighted_plot_data)
+
+plot_data_combined$type <- factor(
+  plot_data_combined$type,
+  levels = c(
+    "Respondent only",
+    "Respondents only, with IPW",
+    "Respondents and cross-walked scores from proxies"
+  )
+)
+
+# Plot means by year for each method
+p_means <- ggplot(plot_data_combined, 
+                  aes(x = year, y = value, 
+                      color = type, shape = type, linetype = type)) +
+  geom_line(size = 1) +
+  geom_point(size = 3) +
+  scale_color_manual(
+    values = c(
+      "Respondent only"                                  = "brown",
+      "Respondents only, with IPW"                       = "darkgreen",
+      "Respondents and cross-walked scores from proxies" = "blue"
+    ),
+    labels = c(
+      "Respondent only",
+      "Respondents only, with IPW",
+      "Respondents and\ncross-walked scores from proxies"
+    )
+  ) +
+  scale_shape_manual(
+    values = c(15, 18, 17),
+    labels = c(
+      "Respondent only",
+      "Respondents only, with IPW",
+      "Respondents and\ncross-walked scores from proxies"
+    )
+  ) +
+  scale_linetype_manual(
+    values = c("dashed", "solid", "dotdash"),
+    labels = c(
+      "Respondent only",
+      "Respondents only, with IPW",
+      "Respondents and\ncross-walked scores from proxies"
+    )
+  ) +
+  scale_x_continuous(breaks = seq(2010, 2020, by = 2), 
+                     limits = c(2010, 2020)) +
+  scale_y_continuous(limits = c(6, 12)) +
+  theme_minimal() +
+  labs(
+    x        = NULL,
+    y        = "Word total score",
+    color    = NULL,
+    shape    = NULL,
+    linetype = NULL
+  ) +
+  theme(
+    legend.position = "bottom",
+    text = element_text(size = 12)
+  )
+
+print(p_means)
+```
+
+
+```{r}
+########GEE analysis###
+
+# --- Respondent only ---
+rand_respondent_all_long <- rand_respondent_all %>%
+  pivot_longer(
+    cols      = starts_with("wordtot_"),
+    names_to  = "year",
+    names_prefix = "wordtot_",
+    values_to = "wordtot"
+  ) %>%
+  mutate(
+    year            = as.numeric(year),
+    time_since_2010 = year - 2010
+  ) %>%
+  select(-starts_with("pred_wordtot_")) %>%
+  filter(!is.na(wordtot)) %>%
+  arrange(hhidpn, year)
+
+gee_respondent <- geeglm(
+  wordtot ~ time_since_2010,
+  id     = hhidpn,
+  data   = rand_respondent_all_long,
+  family = gaussian
+)
+summary(gee_respondent)
+```
+
+
+```{r}
+# --- Cross-walked (respondent + proxy) ---
+rand_respondent_all_proxy <- rand_respondent_all_proxy %>%
+  mutate(all_2010 = wordtot_2010)
+
+rand_respondent_all_proxy_long <- rand_respondent_all_proxy %>%
+  pivot_longer(
+    cols      = starts_with("all_"),
+    names_to  = "year",
+    values_to = "all_score"
+  ) %>%
+  mutate(
+    year            = as.numeric(sub("all_", "", year)),
+    time_since_2010 = year - 2010
+  ) %>%
+  select(hhidpn, year, all_score, time_since_2010) %>%
+  filter(!is.na(all_score)) %>%
+  arrange(hhidpn, year)
+
+gee_respondent_proxy <- geeglm(
+  all_score ~ time_since_2010,
+  id     = hhidpn,
+  data   = rand_respondent_all_proxy_long,
+  family = gaussian
+)
+summary(gee_respondent_proxy)
+```
+
+
+
+```{r}
+for (yr in year_all) {
+  df_name <- paste0("ipw_data_clean_", yr)
+  df <- get(df_name)
+  
+  df_self <- df %>% filter(type_of_interview == "self")
+  
+  cat("Year:", yr, ":", nrow(df_self), "\n")
+}
+
+
+#Convert each of the ipw_data_clean_ datasets into long format and then merge them.
+clean_list <- lapply(year_all, function(yr) {
+  
+  df <- get(paste0("ipw_data_clean_", yr))
+  
+  df %>%
+    select(
+      hhidpn,
+      wordtot = !!sym(paste0("wordtot_", yr)),
+      ipw_weight
+    ) %>%
+    mutate(year = yr)
+})
+
+ipw_long <- bind_rows(clean_list)%>%
+  arrange(hhidpn,year)%>%
+  mutate(
+    time_since_2010 = year - 2010)
+
+#Add the data for the year 2010
+rand_2010_respondent_clean_long<-rand_2010_respondent_clean%>%
+  select(hhidpn,wordtot_2010)%>%
+  select(
+    hhidpn,
+    wordtot = wordtot_2010
+  ) %>%
+  mutate(year = 2010,time_since_2010 = 0,ipw_weight=1)
+
+
+ipw_weights_data<-bind_rows(ipw_long,rand_2010_respondent_clean_long)%>%
+  arrange(hhidpn,year)%>%
+  filter(!is.na(wordtot))
+
+
+#fit gee model
+gee_respondent_weight<- geeglm(wordtot ~ time_since_2010, id = hhidpn, 
+                              data = ipw_weights_data, weights=ipw_weight,
+                        family = gaussian)
+
+summary(gee_respondent_weight)
+```
+
+
+```{r}
+get_ci_linear <- function(model, newdata) {
+  pred <- predict(model, newdata = newdata)
+  V    <- vcov(model)
+  X    <- model.matrix(~ time_since_2010, data = newdata)
+  se   <- sqrt(diag(X %*% V %*% t(X)))
+  tibble(
+    time_since_2010 = newdata$time_since_2010,
+    pred  = pred,
+    ci_lo = pred - 1.96 * se,
+    ci_hi = pred + 1.96 * se
+  )
+}
+
+newdata <- data.frame(time_since_2010 = seq(0, 10, by = 0.2))
+
+ci_resp  <- get_ci_linear(gee_respondent,        newdata) %>% 
+  mutate(type = "Respondent only")
+ci_ipw   <- get_ci_linear(gee_respondent_weight, newdata) %>% 
+  mutate(type = "Respondents only, with IPW")
+ci_proxy <- get_ci_linear(gee_respondent_proxy,  newdata) %>% 
+  mutate(type = "Respondents and cross-walked scores from proxies")
+
+ci_combined <- bind_rows(ci_resp, ci_ipw, ci_proxy) %>%
+  mutate(type = factor(type, levels = c(
+    "Respondent only",
+    "Respondents only, with IPW",
+    "Respondents and cross-walked scores from proxies"
+  )))
+```
+
+
+
+```{r}
+p_linear_ci <- ggplot(ci_combined,
+                      aes(x = time_since_2010, color = type, fill = type)) +
+  geom_ribbon(aes(ymin = ci_lo, ymax = ci_hi),
+              alpha = 0.15, color = NA) +
+  geom_line(aes(y = pred), size = 1.2) +
+  scale_color_manual(
+    breaks = levels(ci_combined$type),
+    labels = c(
+      "Respondent only",
+      "Respondents only, with IPW",
+      "Respondents and\ncross-walked scores from proxies"
+    ),
+    values = c(
+      "Respondent only"                                  = "brown",
+      "Respondents only, with IPW"                       = "darkgreen",
+      "Respondents and cross-walked scores from proxies" = "blue"
+    )
+  ) +
+  scale_fill_manual(
+    breaks = levels(ci_combined$type),
+    labels = c(
+      "Respondent only",
+      "Respondents only, with IPW",
+      "Respondents and\ncross-walked scores from proxies"
+    ),
+    values = c(
+      "Respondent only"                                  = "brown",
+      "Respondents only, with IPW"                       = "darkgreen",
+      "Respondents and cross-walked scores from proxies" = "blue"
+    )
+  ) +
+  scale_x_continuous(breaks = seq(0, 10, by = 2),  
+                     limits = c(0, 10)) + 
+  scale_y_continuous(breaks = seq(8.5, 10, by = 0.5), limits = c(8.5, 10)) +
+  labs(
+    x     = "Years since 2010",             
+    y     = "Predicted total word recall score",
+    color = "Modeling approach",
+    fill  = "Modeling approach"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "bottom",
+    legend.text = element_text(size = 11)
+  )
+
+print(p_linear_ci)
+```
+
+
+```{r}
+# ggsave(
+#   filename = "p_linear_ci_2010_2020.png",
+#   plot = p_linear_ci,
+#   width = 8,
+#   height = 8,
+#   dpi = 300
+# )
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+

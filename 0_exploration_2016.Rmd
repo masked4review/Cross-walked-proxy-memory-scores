@@ -1,0 +1,838 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-09-19"
+---
+
+```{r}
+library(tidyverse)
+library(here)
+library(haven)
+library(stringr)
+library(dplyr)
+library(polycor)
+```
+
+
+```{r}
+informant_data <- read_sas("hc16hp_i.sas7bdat")
+
+respondent_data <- read_sas("hc16hp_r.sas7bdat")
+
+rand_2016 <- read_sas("h16f2c.sas7bdat")
+```
+
+
+```{r}
+names(informant_data) <- tolower(names(informant_data))
+names(respondent_data) <-tolower(names(respondent_data))
+names(rand_2016) <-tolower(names(rand_2016))
+
+
+informant_data <- informant_data %>% 
+  mutate(hhidpn = str_pad(paste(hhid, pn, sep=""),9,pad="0"))
+
+respondent_data <- respondent_data %>% 
+  mutate(hhidpn = str_pad(paste(hhid, pn, sep=""),9,pad="0"))
+
+rand_2016 <-rand_2016 %>% 
+  mutate(hhidpn = str_pad(hhidpn,9,pad="0"))
+```
+
+
+```{r}
+#rand 2016 Jorm IQCODE scores: 
+rand_2016_filter<-rand_2016%>%
+  select(hhidpn,pa009,pa103,pd506,pd507,pd508,
+         pd509,pd510,pd511,
+         pd512,pd513,pd514,
+         pd515,pd516,pd517,
+         pd518,pd519,pd520,
+         pd521,pd522,pd523,
+         pd524,pd525,pd526,
+         pd527,pd528,pd529,
+         pd530,pd531,pd532,
+         pd533,pd534,pd535,
+         pd536,pd537,pd538,
+         pd539,pd540,pd541,
+         pd542,pd543,pd544,
+         pd545,pd546,pd547,
+         pd548,pd549,pd550,
+         pd551,pd552,pd553)
+```
+
+
+```{r}
+table(rand_2016_filter$pa009,exclude=NULL)
+```
+
+
+
+```{r}
+start_vars <- seq(506, 553, by = 3)
+
+rand_2016_score <- rand_2016_filter
+
+for (i in seq_along(start_vars)) {
+  d_a <- paste0("pd", start_vars[i])
+  d_b <- paste0("pd", start_vars[i] + 1)
+  d_c <- paste0("pd", start_vars[i] + 2)
+  
+  score_var <- paste0("j", i, "score")
+  
+  rand_2016_score <- rand_2016_score %>%
+    mutate(
+      !!score_var := case_when(
+        .data[[d_a]] == 2 ~ 3,
+        .data[[d_b]] == 1 ~ 1,
+        .data[[d_b]] == 2 ~ 2,
+        .data[[d_c]] == 4 ~ 4,
+        .data[[d_c]] == 5 ~ 5,
+        TRUE ~ NA_real_
+      )
+    )
+}
+```
+
+
+```{r}
+rand_2016_score <- rand_2016_score %>%
+  rowwise() %>%
+  mutate(jorm_score_2016 = round(
+    mean(c_across(starts_with("j") & ends_with("score")), na.rm = TRUE), 3
+  )) %>%
+  ungroup()
+
+
+```
+
+
+```{r}
+table(rand_2016_score$pa103,exclude=NULL)
+```
+
+```{r}
+rand_2016_score <- rand_2016_score %>%
+  mutate(pa103_grouped = case_when(
+    pa103 %in% c(2) ~ "spouse",
+    pa103 %in% c(3, 5, 6, 7, 8) ~ "child",
+    pa103 %in% c(9, 15, 17, 19, 20, 23, 24) ~ "other",
+    TRUE ~ NA_character_
+  ))
+
+
+table(rand_2016_score$pa103_grouped,exclude=NULL)
+```
+
+```{r}
+table(rand_2016_score$pa103,rand_2016_score$pa103_grouped,exclude=NULL)
+```
+
+
+```{r}
+table(respondent_data$r1iflag,exclude=NULL)
+```
+
+
+```{r}
+table(informant_data$inf1rel,exclude=NULL)
+```
+
+```{r}
+proxy_ids <- respondent_data %>%
+  filter(r1iflag == 1) %>%
+  pull(hhidpn)
+
+informant_data <- informant_data %>%
+  mutate(r_proxy = if_else(hhidpn %in% proxy_ids, 1, 0))
+```
+
+
+
+```{r}
+informant_data_filter <- informant_data %>%
+  select(hhidpn, inf1rel,inf1jorm_score, r_proxy, inf1riwage, all_of(paste0("inf1jorm", 1:16, "_score")))
+
+```
+
+
+```{r}
+informant_data_filter <- informant_data_filter %>%
+  mutate(inf1rel_grouped = case_when(
+    inf1rel == 1 ~ "spouse",
+    inf1rel == 2 ~ "child",
+    inf1rel %in% c(3, 4, 5, 6, 7, 8, 97) ~ "other",
+    TRUE ~ NA_character_
+  ))
+
+
+table(informant_data_filter$inf1rel_grouped,exclude=NULL)
+```
+
+```{r}
+table(informant_data$inf1rel,informant_data_filter$inf1rel_grouped,exclude=NULL)
+```
+
+
+```{r}
+final_data<-informant_data_filter%>%
+  inner_join(rand_2016_score,by="hhidpn")
+```
+
+
+```{r}
+table(final_data$inf1rel,final_data$pa009,exclude=NULL)
+```
+
+```{r}
+final_data_filter<-final_data %>%
+  filter(!is.na(inf1rel) & pa009 != 1)
+```
+
+
+```{r}
+table(final_data_filter$inf1rel_grouped,final_data_filter$pa103_grouped,exclude=NULL)
+```
+
+```{r}
+final_data_matched <- final_data_filter %>%
+  filter(inf1rel_grouped == pa103_grouped)
+```
+
+
+```{r}
+final_data_matched_70<-final_data_matched%>%
+  filter(inf1riwage>=70)
+```
+
+
+```{r}
+table(final_data_matched_70$inf1rel_grouped,final_data_matched_70$pa103_grouped,exclude=NULL)
+```
+
+
+```{r}
+table(final_data_matched$r_proxy)
+table(final_data_matched$pa009)
+```
+
+
+
+```{r}
+direct_group <- final_data_matched  %>%
+  filter(r_proxy == 1) %>%
+  mutate(
+    group = "HCAP: Respondent + Informant",
+    jorm_score = inf1jorm_score
+  )
+
+
+proxy_group <- final_data_matched %>%
+  filter(pa009 %in% c(2, 3)) %>%
+  mutate(
+    group = "Core: Proxy respondents",
+    jorm_score = jorm_score_2016
+  )
+
+plot_data <- bind_rows(direct_group, proxy_group)
+```
+
+
+```{r}
+table(plot_data$group)
+```
+
+
+```{r}
+plot_data$group <- factor(
+  plot_data$group,
+  levels = c("HCAP: Respondent + Informant", "Core: Proxy respondents")
+)
+
+p<-ggplot(plot_data, aes(x = jorm_score, fill = group)) +
+  geom_histogram(aes(y = after_stat(density)), position = "identity", bins = 10, alpha = 0.5) +
+  scale_fill_manual(
+    values = c("red", "blue"),
+    name = "Group"
+  ) +
+  labs(
+    title = "Overlaid Histogram of IQCODE Scores",
+    x = "IQCODE Score",
+    y = "Density"
+  ) +
+  theme_minimal()
+
+p
+```
+
+```{r}
+# ggsave(
+#   filename = "Overlaid Histogram.png",
+#   plot = p,
+#   bg = "white"
+# )
+
+```
+
+
+
+```{r}
+final_data_child <- final_data_matched %>%
+  filter(inf1rel_grouped == "child", pa103_grouped == "child")
+
+final_data_other <- final_data_matched %>%
+  filter(inf1rel_grouped == "other", pa103_grouped == "other")
+
+final_data_spouse <- final_data_matched %>%
+  filter(inf1rel_grouped == "spouse", pa103_grouped == "spouse")
+```
+
+
+```{r}
+final_data_child_70 <- final_data_matched_70 %>%
+  filter(inf1rel_grouped == "child", pa103_grouped == "child")
+
+final_data_other_70 <- final_data_matched_70 %>%
+  filter(inf1rel_grouped == "other", pa103_grouped == "other")
+
+final_data_spouse_70 <- final_data_matched_70 %>%
+  filter(inf1rel_grouped == "spouse", pa103_grouped == "spouse")
+```
+
+
+
+```{r}
+cor_overall<- cor(final_data_matched$inf1jorm_score, final_data_matched$jorm_score_2016, method = "pearson")
+cor_overall
+
+cor_child<- cor(final_data_child$inf1jorm_score, final_data_child$jorm_score_2016, method = "pearson")
+cor_child
+
+cor_other<- cor(final_data_other$inf1jorm_score, final_data_other$jorm_score_2016, method = "pearson")
+cor_other
+
+cor_spouse<- cor(final_data_spouse$inf1jorm_score, final_data_spouse$jorm_score_2016, method = "pearson")
+cor_spouse
+```
+
+```{r}
+cor_overall <- polychor(final_data_matched$inf1jorm_score, final_data_matched$jorm_score_2016)
+cor_overall
+
+cor_child <- polychor(final_data_child$inf1jorm_score, final_data_child$jorm_score_2016)
+cor_child
+
+cor_other <- polychor(final_data_other$inf1jorm_score, final_data_other$jorm_score_2016)
+cor_other
+
+cor_spouse <- polychor(final_data_spouse$inf1jorm_score, final_data_spouse$jorm_score_2016)
+cor_spouse
+```
+
+```{r}
+cor_overall <- cor(final_data_matched_70$inf1jorm_score, final_data_matched_70$jorm_score_2016, method = "pearson")
+cor_overall
+
+cor_child <- cor(final_data_child_70$inf1jorm_score, final_data_child_70$jorm_score_2016, method = "pearson")
+cor_child
+
+cor_other <- cor(final_data_other_70$inf1jorm_score, final_data_other_70$jorm_score_2016, method = "pearson")
+cor_other
+
+cor_spouse <- cor(final_data_spouse_70$inf1jorm_score, final_data_spouse_70$jorm_score_2016, method = "pearson")
+cor_spouse
+
+```
+
+```{r}
+cor_overall <- polychor(final_data_matched_70$inf1jorm_score, final_data_matched_70$jorm_score_2016)
+cor_overall
+
+cor_child <- polychor(final_data_child_70$inf1jorm_score, final_data_child_70$jorm_score_2016)
+cor_child
+
+cor_other <- polychor(final_data_other_70$inf1jorm_score, final_data_other_70$jorm_score_2016)
+cor_other
+
+cor_spouse <- polychor(final_data_spouse_70$inf1jorm_score, final_data_spouse_70$jorm_score_2016)
+cor_spouse
+
+```
+
+
+```{r}
+names(final_data_matched)
+```
+
+```{r}
+cor_overall_p <- c()
+
+for (i in 1:16) {
+  var1 <- paste0("inf1jorm", i, "_score")
+  var2 <- paste0("j", i, "score")
+  
+  cor_val <- cor(final_data_matched[[var1]], final_data_matched[[var2]], 
+                 method = "pearson", use = "complete.obs")
+  
+  cor_overall_p[i] <- cor_val
+}
+
+names(cor_overall_p) <- paste0("cor_", 1:16)
+cor_overall_p
+
+
+```
+
+
+
+```{r}
+cor_overall_poly <- c()
+
+for (i in 1:16) {
+  var1 <- paste0("inf1jorm", i, "_score")
+  var2 <- paste0("j", i, "score")
+
+  x <- final_data_matched[[var1]]
+  y <- final_data_matched[[var2]]
+
+  complete_idx <- complete.cases(x, y)
+  x <- x[complete_idx]
+  y <- y[complete_idx]
+
+  cor_val <- polychor(x, y)
+
+  cor_overall_poly[i] <- cor_val
+}
+
+names(cor_overall_poly) <- paste0("cor_", 1:16)
+
+cor_overall_poly
+
+```
+
+
+
+```{r}
+cor_child_p <- c()
+
+for (i in 1:16) {
+  var1 <- paste0("inf1jorm", i, "_score")
+  var2 <- paste0("j", i, "score")
+  
+  cor_val <- cor(final_data_child[[var1]],final_data_child[[var2]], 
+                 method = "pearson", use = "complete.obs")
+  
+  cor_child_p[i] <- cor_val
+}
+
+names(cor_child_p) <- paste0("cor_", 1:16)
+cor_child_p
+
+```
+
+```{r}
+table(final_data_child$inf1jorm1_score, exclude = NULL)
+table(final_data_child$inf1jorm2_score, exclude = NULL)
+table(final_data_child$inf1jorm3_score, exclude = NULL)
+table(final_data_child$inf1jorm4_score, exclude = NULL)
+table(final_data_child$inf1jorm5_score, exclude = NULL)
+table(final_data_child$inf1jorm6_score, exclude = NULL)
+table(final_data_child$inf1jorm7_score, exclude = NULL)
+table(final_data_child$inf1jorm8_score, exclude = NULL)
+table(final_data_child$inf1jorm9_score, exclude = NULL)
+table(final_data_child$inf1jorm10_score, exclude = NULL)
+table(final_data_child$inf1jorm11_score, exclude = NULL)
+table(final_data_child$inf1jorm12_score, exclude = NULL)
+table(final_data_child$inf1jorm13_score, exclude = NULL)
+table(final_data_child$inf1jorm14_score, exclude = NULL)
+table(final_data_child$inf1jorm15_score, exclude = NULL)
+table(final_data_child$inf1jorm16_score, exclude = NULL)
+
+```
+
+
+```{r}
+table(final_data_child$j1score, exclude = NULL)
+table(final_data_child$j2score, exclude = NULL)
+table(final_data_child$j3score, exclude = NULL)
+table(final_data_child$j4score, exclude = NULL)
+table(final_data_child$j5score, exclude = NULL)
+table(final_data_child$j6score, exclude = NULL)
+table(final_data_child$j7score, exclude = NULL)
+table(final_data_child$j8score, exclude = NULL)
+table(final_data_child$j9score, exclude = NULL)
+table(final_data_child$j10score, exclude = NULL)
+table(final_data_child$j11score, exclude = NULL)
+table(final_data_child$j12score, exclude = NULL)
+table(final_data_child$j13score, exclude = NULL)
+table(final_data_child$j14score, exclude = NULL)
+table(final_data_child$j15score, exclude = NULL)
+table(final_data_child$j16score, exclude = NULL)
+```
+
+```{r}
+test<-final_data_child %>% 
+  filter(!is.na(j13score))
+
+table(test$inf1jorm13_score, exclude = NULL)
+table(test$j13score, exclude = NULL)
+
+table(test$inf1jorm13_score, test$j13score)
+
+polychor(test$inf1jorm13_score, test$j13score)
+```
+
+
+
+```{r}
+cor_child_poly <- c()
+
+for (i in 1:16) {
+  var1 <- paste0("inf1jorm", i, "_score")
+  var2 <- paste0("j", i, "score")
+
+  x <- final_data_child[[var1]]
+  y <- final_data_child[[var2]]
+
+  complete_idx <- complete.cases(x, y)
+  x <- x[complete_idx]
+  y <- y[complete_idx]
+
+  cor_val <- polychor(x, y)
+
+  cor_child_poly[i] <- cor_val
+}
+
+names(cor_child_poly) <- paste0("cor_", 1:16)
+
+cor_child_poly
+
+```
+
+
+```{r}
+cor_other_p <- c()
+
+for (i in 1:16) {
+  var1 <- paste0("inf1jorm", i, "_score")
+  var2 <- paste0("j", i, "score")
+  
+  cor_val <- cor(final_data_other[[var1]],final_data_other[[var2]], 
+                 method = "pearson", use = "complete.obs")
+  
+  cor_other_p[i] <- cor_val
+}
+
+names(cor_other_p) <- paste0("cor_", 1:16)
+cor_other_p
+```
+
+
+```{r}
+cor_other_poly <- c()
+
+for (i in 1:16) {
+  var1 <- paste0("inf1jorm", i, "_score")
+  var2 <- paste0("j", i, "score")
+
+  x <- final_data_other[[var1]]
+  y <- final_data_other[[var2]]
+
+  complete_idx <- complete.cases(x, y)
+  x <- x[complete_idx]
+  y <- y[complete_idx]
+
+  cor_val <- polychor(x, y)
+
+  cor_other_poly[i] <- cor_val
+}
+
+names(cor_other_poly) <- paste0("cor_", 1:16)
+
+cor_other_poly
+
+```
+
+
+
+```{r}
+cor_spouse_p <- c()
+
+for (i in 1:16) {
+  var1 <- paste0("inf1jorm", i, "_score")
+  var2 <- paste0("j", i, "score")
+  
+  cor_val <- cor(final_data_spouse[[var1]],final_data_spouse[[var2]], 
+                 method = "pearson", use = "complete.obs")
+  
+  cor_spouse_p[i] <- cor_val
+}
+
+names(cor_spouse_p) <- paste0("cor_", 1:16)
+cor_spouse_p
+```
+
+
+```{r}
+table(final_data_spouse$inf1jorm1_score, exclude = NULL)
+table(final_data_spouse$inf1jorm2_score, exclude = NULL)
+table(final_data_spouse$inf1jorm3_score, exclude = NULL)
+table(final_data_spouse$inf1jorm4_score, exclude = NULL)
+table(final_data_spouse$inf1jorm5_score, exclude = NULL)
+table(final_data_spouse$inf1jorm6_score, exclude = NULL)
+table(final_data_spouse$inf1jorm7_score, exclude = NULL)
+table(final_data_spouse$inf1jorm8_score, exclude = NULL)
+table(final_data_spouse$inf1jorm9_score, exclude = NULL)
+table(final_data_spouse$inf1jorm10_score, exclude = NULL)
+table(final_data_spouse$inf1jorm11_score, exclude = NULL)
+table(final_data_spouse$inf1jorm12_score, exclude = NULL)
+table(final_data_spouse$inf1jorm13_score, exclude = NULL)
+table(final_data_spouse$inf1jorm14_score, exclude = NULL)
+table(final_data_spouse$inf1jorm15_score, exclude = NULL)
+table(final_data_spouse$inf1jorm16_score, exclude = NULL)
+
+```
+
+```{r}
+table(final_data_spouse$j1score, exclude = NULL)
+table(final_data_spouse$j2score, exclude = NULL)
+table(final_data_spouse$j3score, exclude = NULL)
+table(final_data_spouse$j4score, exclude = NULL)
+table(final_data_spouse$j5score, exclude = NULL)
+table(final_data_spouse$j6score, exclude = NULL)
+table(final_data_spouse$j7score, exclude = NULL)
+table(final_data_spouse$j8score, exclude = NULL)
+table(final_data_spouse$j9score, exclude = NULL)
+table(final_data_spouse$j10score, exclude = NULL)
+table(final_data_spouse$j11score, exclude = NULL)
+table(final_data_spouse$j12score, exclude = NULL)
+table(final_data_spouse$j13score, exclude = NULL)
+table(final_data_spouse$j14score, exclude = NULL)
+table(final_data_spouse$j15score, exclude = NULL)
+table(final_data_spouse$j16score, exclude = NULL)
+
+```
+
+```{r}
+table(final_data_spouse$inf1jorm13_score, final_data_spouse$j13score)
+
+polychor(final_data_spouse$inf1jorm13_score, final_data_spouse$j13score)
+```
+
+
+
+```{r}
+cor_spouse_poly <- c()
+
+for (i in 1:16) {
+  var1 <- paste0("inf1jorm", i, "_score")
+  var2 <- paste0("j", i, "score")
+
+  x <- final_data_spouse[[var1]]
+  y <- final_data_spouse[[var2]]
+
+  complete_idx <- complete.cases(x, y)
+  x <- x[complete_idx]
+  y <- y[complete_idx]
+
+  cor_val <- polychor(x, y)
+
+  cor_spouse_poly[i] <- cor_val
+}
+
+names(cor_spouse_poly) <- paste0("cor_", 1:16)
+
+cor_spouse_poly
+
+```
+
+
+```{r}
+question_labels <- tolower(c(
+  "Remembering things about family",
+  "Remembering recent events",
+  "Recalling conversations",
+  "Remembering address/phone number",
+  "Remembering date",
+  "Remembering where things are kept",
+  "Remembering where to find things",
+  "Knowing how to work familiar things",
+  "Learning to use a new gadgets",
+  "Learning new things in general",
+  "Following a story",
+  "Making everyday decisions",
+  "Handling money for shopping",
+  "Handling financial matters",
+  "Everyday arithmetic problems",
+  "Intelligence for reasoning"
+))
+
+result_df_pearson <- data.frame(
+  Question = question_labels,
+  Overall = rep(NA, 16),
+  Proxy_Child = rep(NA, 16),
+  Proxy_Other = rep(NA, 16),
+  Proxy_Spouse = rep(NA, 16)
+)
+
+
+
+result_df_pearson$Overall <- cor_overall_p
+result_df_pearson$Proxy_Child <- cor_child_p
+result_df_pearson$Proxy_Other <- cor_other_p
+result_df_pearson$Proxy_Spouse <- cor_spouse_p
+
+avg_row <- colMeans(result_df_pearson[, -1])
+avg_row <- c("average score", avg_row)
+result_df_pearson <- rbind(result_df_pearson, avg_row)
+```
+
+```{r}
+# write.csv(result_df_pearson,
+#           file = "cor_result_2016_pearson.csv",
+#           row.names = FALSE)
+
+```
+
+
+```{r}
+question_labels <- tolower(c(
+  "Remembering things about family",
+  "Remembering recent events",
+  "Recalling conversations",
+  "Remembering address/phone number",
+  "Remembering date",
+  "Remembering where things are kept",
+  "Remembering where to find things",
+  "Knowing how to work familiar things",
+  "Learning to use a new gadgets",
+  "Learning new things in general",
+  "Following a story",
+  "Making everyday decisions",
+  "Handling money for shopping",
+  "Handling financial matters",
+  "Everyday arithmetic problems",
+  "Intelligence for reasoning"
+))
+
+result_df_poly<- data.frame(
+  Question = question_labels,
+  Overall = rep(NA, 16),
+  Proxy_Child = rep(NA, 16),
+  Proxy_Other = rep(NA, 16),
+  Proxy_Spouse = rep(NA, 16)
+)
+
+
+result_df_poly$Overall <- cor_overall_poly
+result_df_poly$Proxy_Child <- cor_child_poly
+result_df_poly$Proxy_Other <- cor_other_poly
+result_df_poly$Proxy_Spouse <- cor_spouse_poly
+
+avg_row <- colMeans(result_df_poly[, -1])
+avg_row <- c("average score", avg_row)
+result_df_poly <- rbind(result_df_poly, avg_row)
+```
+
+
+```{r}
+# write.csv(result_df_poly,
+#           file = "cor_result_2016_poly.csv",
+#           row.names = FALSE)
+```
+
+
+```{r}
+p2<-ggplot(final_data_matched, aes(x = inf1jorm_score, y = jorm_score_2016)) +
+  geom_point() +
+  labs(title="Overall", x = "HCAP score",
+       y = "Core score")+
+  theme_minimal()
+
+p2
+```
+
+```{r}
+# ggsave(
+#   filename = "scatter_overall_2016.png",
+#   plot = p2,
+#   bg = "white"
+# )
+
+```
+
+
+
+```{r}
+p3<-ggplot(final_data_child, aes(x = inf1jorm_score, y = jorm_score_2016)) +
+  geom_point() +
+  labs(title="Child", x = "HCAP score",
+       y = "Core score")+
+  theme_minimal()
+p3
+```
+
+```{r}
+# ggsave(
+#   filename = "scatter_child_2016.png",
+#   plot = p3,
+#   bg = "white"
+# )
+```
+
+
+
+```{r}
+p4<-ggplot(final_data_other, aes(x = inf1jorm_score, y = jorm_score_2016)) +
+  geom_point() +
+  labs(title="Other", x = "HCAP score",
+       y = "Core score")+
+  theme_minimal()
+
+p4
+```
+
+```{r}
+# ggsave(
+#   filename = "scatter_other_2016.png",
+#   plot = p4,
+#   bg = "white"
+# )
+```
+
+
+
+```{r}
+p5<-ggplot(final_data_spouse, aes(x = inf1jorm_score, y = jorm_score_2016)) +
+  geom_point() +
+  labs(title="Spouse", x = "HCAP score",
+       y = "Core score")+
+  theme_minimal()
+p5
+```
+
+
+```{r}
+# ggsave(
+#   filename = "scatter_spouse_2016.png",
+#   plot = p5,
+#   bg = "white"
+# )
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+

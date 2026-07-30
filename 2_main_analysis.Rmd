@@ -1,0 +1,3990 @@
+---
+title: "Untitled"
+output:
+  word_document: default
+  html_document: default
+date: "2025-11-07"
+---
+
+
+```{r}
+library(dplyr)
+library(haven)
+library(readr)
+library(table1)
+library(tidyr)
+library(lmerTest) 
+library(broom.mixed)
+library(mice)
+library(mitools)
+library(tidyverse)
+library(ggplot2)
+library(openxlsx)
+library(flextable)
+library(equate)
+library(rsample)
+library(dplyr)
+library(purrr)
+library(broom)
+library(yardstick)
+library(polycor)
+library(splines)
+library(geepack)
+```
+
+
+```{r}
+#Read in final HCAP dataset created in table 1 and dataset construction.Rmd. The dataset contains HCAP participants with all three types of r1iflag. 
+hcap_merged_data <- readRDS("hcap_merged_data.rds")
+
+#Keep only people where r1iflag = 1 (Respondent and Informant)
+respondent_informant_data<-hcap_merged_data%>%
+  filter(r1iflag==1)
+
+#read in this dataset for use in EPE, it is from table 1 and dataset construction.Rmd
+hcap_rand2016_filtered <- readRDS("hcap_rand2016_filtered.rds")
+
+```
+
+
+```{r}
+#2022
+#Read in final HCAP dataset created in table 1 and dataset construction.Rmd. The dataset contains HCAP participants with all three types of r1iflag. 
+hcap_merged_data_2022 <- readRDS("hcap_merged_data_2022.rds")
+
+#Keep only people where r2iflag = 1 (Respondent and Informant)
+respondent_informant_data_2022<-hcap_merged_data_2022%>%
+  filter(r2iflag==1)
+
+respondent_informant_data_2022_filter <- respondent_informant_data_2022 %>%
+  filter(
+    !is.na(inf2jorm_score),
+    !is.na(r2word_dscore),
+    !is.na(r2word1_score)
+  )
+#n=2687
+
+#read in this dataset for use in EPE, it is from table 1 and dataset construction.Rmd
+hcap_rand2022_filtered <- readRDS("hcap_rand2022_filtered.rds")
+```
+
+
+
+########equipercentile equating######
+
+```{r}
+# Make frequency tables to pass to EPE function
+freq_hcap <- freqtab(hcap_rand2016_filtered$r1word_dscore)
+freq_rand <- freqtab(hcap_rand2016_filtered$pd184)
+
+# Performing EPE and checking results
+# Map the HCAP delayed word scores to the Core (2016)
+eq_result <- equate(freq_hcap, freq_rand, type = "equipercentile")
+eq_result$concordance
+plot(eq_result)
+# scale: original HCAP word delayed score, yx: equated word delayed score
+
+# Assess whether the smooth method is needed
+# Since the results from the smooth method don't differ much,
+# proceed with the original method
+eq_result_smooth <- equate(
+  freq_hcap,
+  freq_rand,
+  type = "equipercentile",
+  smoothmethod = "loglinear"
+)
+
+eq_result_smooth$concordance
+plot(eq_result_smooth)
+
+summary(eq_result_smooth$concordance$yx)
+summary(eq_result$concordance$yx)
+
+```
+
+
+
+```{r}
+#2022
+# Make frequency tables to pass to EPE function (2022)
+freq_hcap_2022 <- freqtab(hcap_rand2022_filtered$r2word_dscore)
+freq_rand_2022 <- freqtab(hcap_rand2022_filtered$sd184)
+
+# Performing EPE and checking results
+# Map the HCAP delayed word scores to the Core (2022)
+eq_result_2022 <- equate(freq_hcap_2022, freq_rand_2022, type = "equipercentile")
+eq_result_2022$concordance
+plot(eq_result_2022)
+# scale: original HCAP word delayed score, yx: equated word delayed score
+
+# Assess whether the smooth method is needed
+# Since the results from the smooth method don't differ much, proceed with the original method
+eq_result_2022_smooth <- equate(
+  freq_hcap_2022,
+  freq_rand_2022,
+  type = "equipercentile",
+  smoothmethod = "loglinear"
+)
+eq_result_2022_smooth$concordance
+plot(eq_result_2022_smooth)
+
+summary(eq_result_2022_smooth$concordance$yx)
+summary(eq_result_2022$concordance$yx)
+```
+
+
+
+
+```{r}
+#Apply the equated scores to all HCAP cases whose interview type is Respondent and Informant.
+#eq_result$concordance contains both the original HCAP delayed word recall score (r1word_dscore, labeled as scale) and the equated score (equated_wd_score, labeled as yx). Rename these two columns and then merge them back into respondent_informant_data. This way, respondent and informant type in hcap have the equated delayed word recall scores.
+eq_result_filtered<- eq_result$concordance %>%
+      select(scale, yx) %>%
+      rename(r1word_dscore = scale, equated_wd_score = yx)
+
+respondent_informant_data_score<-respondent_informant_data%>%
+  left_join(eq_result_filtered,by="r1word_dscore")
+
+
+#Found that the equated HCAP delayed word recall scores contain negative values, which need to be set to 0.
+summary(respondent_informant_data_score$equated_wd_score)
+
+respondent_informant_data_score$equated_wd_score <- pmax(respondent_informant_data_score$equated_wd_score, 0)
+
+
+#Since very few people answered 'yes' to r13alzhee and r13demene, I will only use r13demene for diagnosis in the later analysis.
+table(respondent_informant_data_score$r13alzhee,exclude=NULL)
+table(respondent_informant_data_score$r13demene,exclude=NULL)
+
+
+#remove r13alzhee since it won't be used in the subsequent analysis. Remove people with missing values in variables that will be used in the subsequent analysis, resulting in the exclusion of 5 individuals
+respondent_informant_data_score <- respondent_informant_data_score %>% select(-r13alzhee)
+
+respondent_informant_data_score_cleaned <- respondent_informant_data_score %>% 
+  filter(
+    !is.na(r1word1_score),
+    !is.na(equated_wd_score),
+    !is.na(inf1riwage),
+    !is.na(inf1jorm_score),
+    !is.na(inf1rel_grouped),
+    !is.na(raedyrs),
+    !is.na(raeduc_f),
+    !is.na(raracem_f),
+    !is.na(r13demene_f)
+  )
+#3029
+
+
+#Add the HCAP Trial 1 word immediate score to the transformed word delayed score to obtain the total word score. Center age at 75 to prepare for the modeling step.
+
+respondent_informant_data_score_cleaned <- respondent_informant_data_score_cleaned %>%
+  mutate(wordtot_hcap = r1word1_score + equated_wd_score)
+
+respondent_informant_data_score_cleaned <- respondent_informant_data_score_cleaned %>%
+  mutate(age_centered_75 = inf1riwage-75)
+
+
+# saveRDS(
+#   respondent_informant_data_score_cleaned,
+#   "respondent_informant_data_score_cleaned.rds"
+# )
+
+#Compare the equated HCAP delayed word recall score with the Core delayed word recall score.
+#plot sample:Compare individuals who participated in both HCAP and the 2016 Core.
+hcap_rand2016 <- hcap_rand2016_filtered %>%
+  left_join(eq_result_filtered,by = "r1word_dscore") 
+#2943
+summary(hcap_rand2016$equated_wd_score)
+
+hcap_rand2016$equated_wd_score <- pmax(hcap_rand2016$equated_wd_score, 0)
+
+plot_data <- hcap_rand2016 %>%
+  select(hhidpn, equated_wd_score, pd184) %>%
+  pivot_longer(cols = -hhidpn, names_to = "variable", values_to = "score") %>%
+  mutate(variable = recode(variable,
+                           equated_wd_score = "2016 HRS-HCAP",
+                           pd184 = "2016 HRS core survey"))
+
+p1 <- ggplot(plot_data, aes(x = score, fill = variable)) +
+  geom_histogram(aes(y = after_stat(count)), 
+                 position = "identity", bins = 20, alpha = 0.5) +
+    scale_fill_manual(
+    values = c("2016 HRS core survey" = "steelblue",
+               "2016 HRS-HCAP"        = "tomato"),
+    breaks = c("2016 HRS core survey", "2016 HRS-HCAP") 
+  ) +
+  scale_x_continuous(breaks = seq(0, 10, by = 2)) +
+  labs(
+    x = "Delayed word recall score",
+    y = "Count",
+    fill = "Variable"
+  ) +
+  theme_minimal()
+
+p1
+
+ggsave(
+  filename = "hist_equated_hcap_core_2016.png",
+  plot = p1,
+  path = "",
+  width = 8,
+  height = 6,
+  dpi = 300
+)
+
+```
+
+
+
+```{r}
+#2022
+#Apply the equated scores to all HCAP cases whose interview type is Respondent and Informant.
+#eq_result_2022$concordance contains both the original HCAP delayed word recall score (r2word_dscore, labeled as scale) and the equated score (equated_wd_score, labeled as yx). Rename these two columns and then merge them back into respondent_informant_data_2022_filter. This way, respondent and informant type in hcap have the equated delayed word recall scores.
+eq_result_filtered_2022<- eq_result_2022$concordance %>%
+      select(scale, yx) %>%
+      rename(r2word_dscore = scale, equated_wd_score_2022 = yx)
+
+respondent_informant_data_score_2022<-respondent_informant_data_2022_filter%>%
+  left_join(eq_result_filtered_2022,by="r2word_dscore")
+
+summary(respondent_informant_data_score_2022$equated_wd_score_2022)
+
+#Since very few people answered 'yes' to r16alzhee and r16demene, I will only use r16demene for diagnosis in the later analysis.
+
+table(respondent_informant_data_score_2022$r16alzhee,exclude=NULL)
+table(respondent_informant_data_score_2022$r16demene,exclude=NULL)
+
+#remove r16alzhee since it won't be used in the subsequent analysis. Remove people with missing values in variables that will be used in the subsequent analysis, resulting in the exclusion of 5 individuals
+
+respondent_informant_data_score_2022 <- respondent_informant_data_score_2022 %>% select(-r16alzhee)
+
+respondent_informant_data_score_cleaned_2022 <- respondent_informant_data_score_2022 %>% 
+  filter(
+    !is.na(r2word1_score),
+    !is.na(equated_wd_score_2022),
+    !is.na(inf2riwage),
+    !is.na(inf2jorm_score),
+    !is.na(inf2rel_grouped),
+    !is.na(raedyrs),
+    !is.na(raeduc_f),
+    !is.na(raracem_f),
+    !is.na(r16demene_f)
+  )
+#2673
+
+
+# saveRDS(
+#   respondent_informant_data_score_cleaned_2022,
+#   "respondent_informant_data_score_cleaned_2022.rds"
+# )
+
+
+#Compare the equated HCAP delayed word recall score with the Core delayed word recall score.
+#plot sample:Compare individuals who participated in both HCAP and the 2022 Core.
+hcap_rand2022 <- hcap_rand2022_filtered %>%
+  left_join(eq_result_filtered_2022,by = "r2word_dscore") 
+#2218
+summary(hcap_rand2022$equated_wd_score_2022)
+
+plot_data_2022 <- hcap_rand2022 %>%
+  select(hhidpn, equated_wd_score_2022, sd184) %>%
+  pivot_longer(cols = -hhidpn, names_to = "variable", values_to = "score") %>%
+  mutate(variable = recode(variable,
+                           equated_wd_score_2022 = "Equated HCAP Word Delayed Recall Score",
+                           sd184 = "Core 2022 Word Delayed Recall Score"))
+
+p1_2022 <- ggplot(plot_data_2022, aes(x = score, fill = variable)) +
+  geom_histogram(aes(y = after_stat(count)), 
+                 position = "identity", bins = 20, alpha = 0.5) +
+  scale_fill_manual(values = c("#341B3D", "#4E18F2")) +
+  scale_x_continuous(breaks = seq(0, 10, by = 2)) +
+  scale_y_continuous(breaks = c(0, 200, 400, 600)) +
+  labs(
+    title = "Overlaid Histogram of Equated HCAP and Core Word Delayed Recall Scores (2022)",
+    x = "Score",
+    y = "Count",
+    fill = "Variable"
+  ) +
+  theme_minimal()
+
+p1_2022
+
+
+```
+
+
+```{r}
+#Align the variable names with those used in the best model.
+respondent_informant_data_score_cleaned_2022 <- respondent_informant_data_score_cleaned_2022 %>%
+  mutate(age_centered_75 = inf2riwage - 75) %>%
+  mutate(wordtot_hcap = r2word1_score + equated_wd_score_2022)%>%
+  rename(inf1jorm_score = inf2jorm_score)
+```
+
+
+
+#######Cross validation#######
+
+
+```{r}
+#Set a random seed to ensure that the subsequent data splits are the same each time
+set.seed(123)
+
+#Use 80% of the data for training and 20% for testing
+split <- initial_split(respondent_informant_data_score_cleaned, prop = 0.80)
+train <- training(split)
+test  <- testing(split)
+
+#Check variable types before running the model.
+str(respondent_informant_data_score_cleaned[, c("wordtot_hcap", "inf1jorm_score", "inf1rel_grouped", "age_centered_75")])
+
+#Use ns() to allow the model to capture nonlinear relationships between the variables and the outcome. Setting knots helps specify where these nonlinear changes occur
+bknots_jorm <- quantile(train$inf1jorm_score, probs = c(0.05, 0.95))
+iknot_jorm  <- quantile(train$inf1jorm_score, probs = 0.5)
+
+bknots_age  <- quantile(train$age_centered_75, probs = c(0.05, 0.95))
+iknot_age   <- quantile(train$age_centered_75, probs = 0.5)
+
+# check knot location
+bknots_jorm  # inf1jorm_score的boundary knots (5th, 95th percentile)
+iknot_jorm   # inf1jorm_score的interior knot (50th percentile)
+
+bknots_age   # age_centered_75的boundary knots (5th, 95th percentile)
+iknot_age    # age_centered_75的interior knot (50th percentile)
+
+
+#Set up models
+candidate_models <- list(
+  m1 = wordtot_hcap ~ inf1jorm_score,
+  m2 = wordtot_hcap ~ inf1jorm_score + inf1rel_grouped,
+  m3 = wordtot_hcap ~ inf1jorm_score * inf1rel_grouped,
+  m4 = wordtot_hcap ~ inf1jorm_score + age_centered_75,
+  m5 = wordtot_hcap ~ inf1jorm_score * age_centered_75,
+  m6 = wordtot_hcap ~ inf1jorm_score * inf1rel_grouped + age_centered_75,
+  m7 = wordtot_hcap ~ inf1jorm_score * inf1rel_grouped + inf1jorm_score * age_centered_75,
+  m8 = wordtot_hcap ~ inf1jorm_score * inf1rel_grouped * age_centered_75,
+  m9  = wordtot_hcap ~ ns(inf1jorm_score, knots = iknot_jorm, Boundary.knots = c(bknots_jorm[1], bknots_jorm[2])),
+  m10 = wordtot_hcap ~ ns(inf1jorm_score, knots = iknot_jorm, Boundary.knots = c(bknots_jorm[1], bknots_jorm[2])) + inf1rel_grouped,
+  m11 = wordtot_hcap ~ ns(inf1jorm_score, knots = iknot_jorm, Boundary.knots = c(bknots_jorm[1], bknots_jorm[2])) * inf1rel_grouped,
+  m12 = wordtot_hcap ~ ns(inf1jorm_score, knots = iknot_jorm, Boundary.knots = c(bknots_jorm[1], bknots_jorm[2])) + ns(age_centered_75, knots = iknot_age, Boundary.knots = c(bknots_age[1], bknots_age[2])),
+  m13 = wordtot_hcap ~ ns(inf1jorm_score, knots = iknot_jorm, Boundary.knots = c(bknots_jorm[1], bknots_jorm[2])) * ns(age_centered_75, knots = iknot_age, Boundary.knots = c(bknots_age[1], bknots_age[2])),
+  m14 = wordtot_hcap ~ ns(inf1jorm_score, knots = iknot_jorm, Boundary.knots = c(bknots_jorm[1], bknots_jorm[2])) * inf1rel_grouped + ns(age_centered_75, knots = iknot_age, Boundary.knots = c(bknots_age[1], bknots_age[2])),
+  m15 = wordtot_hcap ~ ns(inf1jorm_score, knots = iknot_jorm, Boundary.knots = c(bknots_jorm[1], bknots_jorm[2])) * inf1rel_grouped + ns(inf1jorm_score, knots = iknot_jorm, Boundary.knots = c(bknots_jorm[1], bknots_jorm[2])) * ns(age_centered_75, knots = iknot_age, Boundary.knots = c(bknots_age[1], bknots_age[2])),
+  m16 = wordtot_hcap ~ ns(inf1jorm_score, knots = iknot_jorm, Boundary.knots = c(bknots_jorm[1], bknots_jorm[2])) * inf1rel_grouped * ns(age_centered_75, knots = iknot_age, Boundary.knots = c(bknots_age[1], bknots_age[2]))
+)
+
+
+#The dataset train was split into 5 folds for cross-validation.
+folds <- vfold_cv(train, v = 5)
+
+#Fit a model within each cross-validation fold and calculate prediction performance metrics (RMSE, MAE, R²) on the validation set.
+
+fit_eval_one_fold <- function(split_obj, formula) {
+  analysis_data   <- analysis(split_obj)
+  assessment_data <- assessment(split_obj)
+  fit <- lm(formula, data = analysis_data)
+
+  preds <- predict(fit, newdata = assessment_data)
+  tibble(
+    rmse = rmse_vec(truth = assessment_data$wordtot_hcap, estimate = preds),
+    mae  = mae_vec (truth = assessment_data$wordtot_hcap, estimate = preds),
+    rsq  = rsq_vec (truth = assessment_data$wordtot_hcap, estimate = preds)
+  )
+}
+
+
+#Perform cross-validation on multiple model formulas, compute the average prediction error (RMSE, MAE, R²) for each model, and identify the best-performing model.
+
+cv_results <- imap_dfr(candidate_models, function(formula, name) {
+  folds$splits %>%
+    map_dfr(~fit_eval_one_fold(.x, formula)) %>%
+    summarise(across(everything(), mean), .groups = "drop") %>%
+    mutate(model = name,
+           formula_chr = paste(deparse(formula), collapse = ""))
+})
+
+
+cv_results %>% arrange(rmse)
+
+
+#Select the best model from the cross-validation results based on the smallest RMSE, and extract the name and corresponding formula of that model
+best_model_name <- cv_results %>% arrange(rmse) %>% slice(1) %>% pull(model)
+best_formula<- candidate_models[[best_model_name]]
+
+best_model_name
+best_formula 
+
+final_fit <- lm(best_formula, data = train)
+
+#Fit the best-performing model on the training set, evaluate its performance on the test set using RMSE, MAE, and R², and report the estimated model coefficients
+test_pred <- predict(final_fit, newdata = test)
+final_test_metrics <- tibble(
+  rmse = rmse_vec(test$wordtot_hcap, test_pred),
+  mae  = mae_vec (test$wordtot_hcap, test_pred),
+  rsq  = rsq_vec (test$wordtot_hcap, test_pred)
+)
+final_test_metrics
+
+coef_table <- tidy(final_fit)
+coef_table
+
+#Use the trained linear model final_fit to make predictions on the respondent_informant_data_score_cleaned dataset and obtain the predicted values pred_score.Check the correlation between predictions and actuals
+respondent_informant_data_score_cleaned <- respondent_informant_data_score_cleaned %>%
+  mutate(pred_score = predict(final_fit, newdata = respondent_informant_data_score_cleaned))
+
+cor(respondent_informant_data_score_cleaned$wordtot_hcap, respondent_informant_data_score_cleaned$pred_score, method = "pearson")
+```
+
+
+
+```{r}
+# write_csv(
+#   cv_results,
+#   "cv_results.csv"
+# )
+
+
+# saveRDS(
+#   final_fit,
+#   "final_fit.rds"
+# )
+```
+
+
+```{r}
+coef_table_save <- tidy(final_fit) %>%
+  select(term, estimate)
+
+# write.csv(
+#   coef_table_save,
+#   "final_fit_coefficients.csv",
+#   row.names = FALSE
+# )
+
+knot_info <- data.frame(
+  variable  = c("inf1jorm_score", "inf1jorm_score", "inf1jorm_score",
+                "age_centered_75", "age_centered_75", "age_centered_75"),
+  knot_type = c("boundary_5pct", "interior_50pct", "boundary_95pct",
+                "boundary_5pct", "interior_50pct", "boundary_95pct"),
+  value     = c(2.5, 3, 4.125, -9, 1, 15)
+)
+
+# write.csv(
+#   knot_info,
+#   "final_fit_knots.csv",
+#   row.names = FALSE
+# )
+```
+
+
+
+```{r}
+#save results
+cv_metrics_2016 <- final_test_metrics %>%
+  pivot_longer(
+    cols = c(rmse, mae, rsq),
+    names_to = "level",
+    values_to = "value"
+  ) %>%
+  mutate(
+    grouping_variable = "cross validation",
+    .before = level
+  )
+
+cor_pred_2016 <- tibble(
+  grouping_variable = "correlation",
+  level = "observed wordtot vs predicted wordtot",
+  pearson_correlation = cor(
+    respondent_informant_data_score_cleaned$wordtot_hcap,
+    respondent_informant_data_score_cleaned$pred_score,
+    method = "pearson"
+  )
+)
+```
+
+
+
+```{r}
+#2022
+#use 2022 data as test set
+test_2022 <- respondent_informant_data_score_cleaned_2022
+
+test_2022_pred <- predict(final_fit, newdata = test_2022)
+
+final_test_metrics_2022 <- tibble(
+  rmse = rmse_vec(truth = test_2022$wordtot_hcap, estimate = test_2022_pred),
+  mae  = mae_vec (truth = test_2022$wordtot_hcap, estimate = test_2022_pred),
+  rsq  = rsq_vec (truth = test_2022$wordtot_hcap, estimate = test_2022_pred)
+)
+final_test_metrics_2022
+
+#Use the trained linear model final_fit to make predictions on the respondent_informant_data_score_cleaned_2022 dataset and obtain the predicted values pred_score.Check the correlation between predictions and actuals
+respondent_informant_data_score_cleaned_2022 <- 
+  respondent_informant_data_score_cleaned_2022 %>%
+  mutate(pred_score = predict(final_fit, 
+                              newdata = respondent_informant_data_score_cleaned_2022))
+
+# Pearson correlation between observed and predicted scores
+cor(
+  respondent_informant_data_score_cleaned_2022$wordtot_hcap,
+  respondent_informant_data_score_cleaned_2022$pred_score,
+  method = "pearson"
+)
+```
+
+
+```{r}
+cv_metrics_2022 <- final_test_metrics_2022 %>%
+  pivot_longer(
+    cols = c(rmse, mae, rsq),
+    names_to = "level",
+    values_to = "value"
+  ) %>%
+  mutate(
+    grouping_variable = "cross validation",
+    .before = level
+  )
+
+cor_pred_2022 <- tibble(
+  grouping_variable = "correlation",
+  level = "observed wordtot vs predicted wordtot",
+  pearson_correlation = cor(
+  respondent_informant_data_score_cleaned_2022$wordtot_hcap,
+  respondent_informant_data_score_cleaned_2022$pred_score,
+  method = "pearson")
+)
+```
+
+
+
+
+#########diagnosis#######
+
+```{r}
+#Check the correlation between Jorm score and word total score. Use Pearson correlation
+cor_jorm_wordtot <- tibble(
+  grouping_variable = "correlation",
+  level = "Jorm score and word total score",
+  pearson_correlation = cor(
+    respondent_informant_data_score_cleaned$wordtot_hcap,
+    respondent_informant_data_score_cleaned$inf1jorm_score,
+    method = "pearson"
+  ),
+  wordtot = 'observed'
+)
+
+
+#Check the types of relevant variables before performing diagnosis.
+str(respondent_informant_data_score_cleaned[, c("raedyrs","raeduc_f","raracem_f","r13demene_f")])
+
+#Check the correlations between each variable and both the predicted values and the actual values
+vars_to_check <- c("inf1riwage","raedyrs")
+
+correlation_comparison <- map_dfr(vars_to_check, function(varname) {
+  tibble(
+    variable = varname,
+    cor_observed = cor(respondent_informant_data_score_cleaned[[varname]], respondent_informant_data_score_cleaned$wordtot_hcap, method = "pearson"),
+    cor_predicted = cor(respondent_informant_data_score_cleaned[[varname]], respondent_informant_data_score_cleaned$pred_score, method = "pearson")
+  )
+})
+
+correlation_comparison
+
+#Compare the mean observed and predicted scores across categories of race, education, and dementia status.
+mean_by_race_2016 <- respondent_informant_data_score_cleaned %>%
+  group_by(raracem_f) %>%
+  summarise(
+    mean_observed = mean(wordtot_hcap),
+    mean_pred = mean(pred_score)
+  )
+
+mean_by_race_2016
+
+mean_by_educ_2016 <-respondent_informant_data_score_cleaned %>%
+  group_by(raeduc_f) %>%
+  summarise(
+    mean_observed = mean(wordtot_hcap),
+    mean_pred = mean(pred_score)
+  )
+mean_by_educ_2016
+
+
+mean_by_dementia_2016 <-respondent_informant_data_score_cleaned %>%
+  group_by(r13demene_f) %>%
+  summarise(
+    mean_observed = mean(wordtot_hcap),
+    mean_pred = mean(pred_score)
+  )
+mean_by_dementia_2016
+
+#Fit linear models to compare how race, education, and dementia status relate to both the observed scores and the predicted scores.
+lm_model_wordtot_hcap <- lm(wordtot_hcap ~ raracem_f, data = respondent_informant_data_score_cleaned)
+summary(lm_model_wordtot_hcap)
+
+lm_model_pred <- lm(pred_score ~ raracem_f, data = respondent_informant_data_score_cleaned)
+summary(lm_model_pred)
+
+lm_model_wordtot_hcap <- lm(wordtot_hcap ~ raeduc_f, data = respondent_informant_data_score_cleaned)
+summary(lm_model_wordtot_hcap)
+
+lm_model_pred <- lm(pred_score ~ raeduc_f, data = respondent_informant_data_score_cleaned)
+summary(lm_model_pred)
+
+lm_model_wordtot_hcap <- lm(wordtot_hcap ~ r13demene_f, data = respondent_informant_data_score_cleaned)
+summary(lm_model_wordtot_hcap)
+
+lm_model_pred <- lm(pred_score ~ r13demene_f, data = respondent_informant_data_score_cleaned)
+summary(lm_model_pred)
+```
+
+
+
+```{r}
+mean_by_educ_2016 <- mean_by_educ_2016 %>%
+  mutate(
+    raeduc_f = fct_relevel(
+      raeduc_f,
+      "Lt High-school",
+      "GED",
+      "High-school graduate",
+      "Some college",
+      "College and above"
+    )
+  )
+
+levels(mean_by_educ_2016$raeduc_f)
+```
+
+
+
+```{r}
+#save result
+mean_comparison_list_2016 <- list(
+  race = mean_by_race_2016,
+  education = mean_by_educ_2016,
+  dementia = mean_by_dementia_2016
+)
+
+mean_comparison_table_long_2016 <- bind_rows(
+  mean_comparison_list_2016,
+  .id = "grouping_variable"
+) %>%
+  pivot_longer(
+    cols = c(raracem_f, raeduc_f, r13demene_f),
+    names_to = "group_var",
+    values_to = "level",
+    values_drop_na = TRUE
+  ) %>%
+  select(grouping_variable, level, mean_observed, mean_pred) %>%
+  pivot_longer(
+    cols = c(mean_observed, mean_pred),
+    names_to = "wordtot",
+    values_to = "mean"
+  ) %>%
+  mutate(
+    wordtot = recode(
+      wordtot,
+      mean_observed = "observed",
+      mean_pred = "predicted"
+    )
+  ) %>%
+  select(grouping_variable, level, mean, wordtot)
+
+
+
+```
+
+
+
+
+
+```{r}
+cor_covariates_long <- correlation_comparison %>%
+  pivot_longer(
+    cols = c(cor_observed, cor_predicted),
+    names_to = "wordtot",
+    values_to = "pearson_correlation"
+  ) %>%
+  mutate(
+    grouping_variable = "correlation",
+    wordtot = recode(
+      wordtot,
+      cor_observed = "observed",
+      cor_predicted = "predicted"
+    ),
+    level = recode(
+      variable,
+      inf1riwage = "Age and word total score",
+      raedyrs   = "Years of education and word total score"
+    )
+  ) %>%
+  select(grouping_variable, level, pearson_correlation, wordtot)
+
+```
+
+
+```{r}
+diag_result_2016<-bind_rows(cor_jorm_wordtot,mean_comparison_table_long_2016,cor_covariates_long,cv_metrics_2016,cor_pred_2016)
+```
+
+
+
+```{r}
+#2016 Obs vs predicted mean wordtot bar plot
+#old
+# plot_df_mean <- mean_comparison_table_long_2016 %>%
+#   mutate(
+#     grouping_variable = factor(
+#       grouping_variable,
+#       levels = c("race", "education", "dementia"),
+#       labels = c("Race", "Education", "Dementia")
+#     ),
+#     wordtot = factor(
+#       wordtot,
+#       levels = c("observed", "predicted"),
+#       labels = c("Observed", "Predicted")
+#     ),
+#     x_level = as.character(level),
+#     x_level = ifelse(x_level == "Lt High-school",
+#                      "Less than High school",
+#                      x_level),
+#     x_level = case_when(
+#       x_level == "No"  ~ "Never reported dementia",
+#       x_level == "Yes" ~ "Ever reported dementia",
+#       TRUE ~ x_level
+#     )
+#   )
+# 
+# 
+# 
+# x_levels <- c(
+#   "White", "Black", "Other",
+#   " ",
+#   "Less than High school",
+#   "GED",
+#   "High-school graduate",
+#   "Some college",
+#   "College and above",
+#   "  ",
+#   "Never reported dementia",
+#   "Ever reported dementia"
+# )
+# 
+# 
+# 
+# plot_df_mean <- plot_df_mean %>%
+#   mutate(x_level = factor(x_level, levels = x_levels)) %>%
+#   complete(wordtot, x_level)
+# 
+# mean_plot<-ggplot(plot_df_mean, aes(x = x_level, y = mean, fill = wordtot)) +
+#   geom_col(width = 0.7, na.rm = TRUE) +
+#   facet_wrap(~ wordtot) +
+#   scale_x_discrete(drop = FALSE) +
+#   scale_fill_manual(
+#     values = c(
+#       Observed  = "#8FBAD9",
+#       Predicted = "#E7B7CF"
+#     )
+#   ) +
+#   labs(
+#     x = NULL,
+#     y = "Mean word total score"
+#   ) +
+#   theme_bw() +
+#   theme(
+#     legend.position = "none",
+#     axis.text.x = element_text(angle = 45, hjust = 1)
+#   )
+# 
+# 
+# mean_plot
+
+plot_df_mean <- mean_comparison_table_long_2016 %>%
+  filter(grouping_variable == "dementia") %>%
+  mutate(
+    wordtot = factor(
+      wordtot,
+      levels = c("observed", "predicted"),
+      labels = c("Observed", "Predicted")
+    ),
+    x_level = case_when(
+      level == "No"  ~ "Never reported dementia",
+      level == "Yes" ~ "Ever reported dementia",
+      TRUE ~ as.character(level)
+    )
+  )
+
+mean_plot <- ggplot(plot_df_mean, aes(x = x_level, y = mean, fill = wordtot)) +
+  geom_col(position = "dodge", width = 0.7) +
+  scale_fill_manual(
+    values = c(
+      Observed  = "#A5C882",
+      Predicted = "#F7DD72"
+    )
+  ) +
+  labs(
+    x = NULL,
+    y = "Mean total word recall score",
+    fill = NULL
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "top",
+    axis.text.x = element_text(angle = 0, hjust = 0.5, size = 14),
+    axis.text.y = element_text(size = 14),
+    axis.title.y = element_text(size = 16),
+    legend.text = element_text(size = 14)
+  )
+
+mean_plot
+
+
+mean_plot_poster <- ggplot(plot_df_mean, aes(x = x_level, y = mean, fill = wordtot)) +
+  geom_col(position = "dodge", width = 0.7) +
+  scale_fill_manual(
+    values = c(
+      Observed  =  "#C44521",  # bright gold
+      Predicted =  "#F2C14E"   #  deep rust-red
+    )
+  ) +
+  labs(
+    x = NULL,
+    y = "Mean total word recall score",
+    fill = NULL
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "top",
+    axis.text.x = element_text(angle = 0, hjust = 0.5, size = 14),
+    axis.text.y = element_text(size = 14),
+    axis.title.y = element_text(size = 16),
+    legend.text = element_text(size = 14)
+  )
+mean_plot_poster
+
+
+# ggsave(
+#   filename = "mean_plot_2016.png",
+#   plot = mean_plot,
+#   path = "",
+#   width = 5.5,
+#   height = 6,
+#   dpi = 300
+# )
+# 
+# ggsave(
+#   filename = "mean_plot_2016_poster.png",
+#   plot = mean_plot_poster,
+#   path = "",
+#   width = 5.5,
+#   height = 6,
+#   dpi = 300
+# )
+```
+
+
+
+```{r}
+#2022
+#Check the correlation between Jorm score and word total score. Use Pearson correlation
+cor_jorm_wordtot_2022 <- tibble(
+  grouping_variable = "correlation",
+  level = "Jorm score and word total score",
+  pearson_correlation = cor(respondent_informant_data_score_cleaned_2022$wordtot_hcap, respondent_informant_data_score_cleaned_2022$inf1jorm_score, method = "pearson"),
+  wordtot = 'observed'
+)
+
+
+#Check the types of relevant variables before performing diagnosis.
+str(respondent_informant_data_score_cleaned_2022[, c("raedyrs","raeduc_f","raracem_f","r16demene_f")])
+
+#Check the correlations between each variable and both the predicted values and the actual values
+vars_to_check_2022 <- c("inf2riwage","raedyrs")
+
+correlation_comparison_2022 <- map_dfr(vars_to_check_2022, function(varname) {
+  tibble(
+    variable = varname,
+    cor_observed = cor(respondent_informant_data_score_cleaned_2022[[varname]], respondent_informant_data_score_cleaned_2022$wordtot_hcap, method = "pearson"),
+    cor_predicted = cor(respondent_informant_data_score_cleaned_2022[[varname]], respondent_informant_data_score_cleaned_2022$pred_score, method = "pearson")
+  )
+})
+
+correlation_comparison_2022
+
+#Compare the mean observed and predicted scores across categories of race, education, and dementia status.
+mean_by_race_2022<-respondent_informant_data_score_cleaned_2022 %>%
+  group_by(raracem_f) %>%
+  summarise(
+    mean_observed = mean(wordtot_hcap),
+    mean_pred = mean(pred_score)
+  )
+
+mean_by_race_2022
+
+mean_by_educ_2022<-respondent_informant_data_score_cleaned_2022 %>%
+  group_by(raeduc_f) %>%
+  summarise(
+    mean_observed = mean(wordtot_hcap),
+    mean_pred = mean(pred_score)
+  )
+
+mean_by_educ_2022
+
+mean_by_dementia_2022<-respondent_informant_data_score_cleaned_2022 %>%
+  group_by(r16demene_f) %>%
+  summarise(
+    mean_observed = mean(wordtot_hcap),
+    mean_pred = mean(pred_score)
+  )
+
+mean_by_dementia_2022
+#Fit linear models to compare how race, education, and dementia status relate to both the observed scores and the predicted scores.
+lm_model_wordtot_hcap_2022 <- lm(wordtot_hcap ~ raracem_f, data = respondent_informant_data_score_cleaned_2022)
+summary(lm_model_wordtot_hcap_2022)
+
+lm_model_pred_2022 <- lm(pred_score ~ raracem_f, data = respondent_informant_data_score_cleaned_2022)
+summary(lm_model_pred_2022)
+
+lm_model_wordtot_hcap_2022 <- lm(wordtot_hcap ~ raeduc_f, data = respondent_informant_data_score_cleaned_2022)
+summary(lm_model_wordtot_hcap_2022)
+
+lm_model_pred_2022 <- lm(pred_score ~ raeduc_f, data = respondent_informant_data_score_cleaned_2022)
+summary(lm_model_pred_2022)
+
+lm_model_wordtot_hcap_2022 <- lm(wordtot_hcap ~ r16demene_f, data = respondent_informant_data_score_cleaned_2022)
+summary(lm_model_wordtot_hcap_2022)
+
+lm_model_pred_2022 <- lm(pred_score ~ r16demene_f, data = respondent_informant_data_score_cleaned_2022)
+summary(lm_model_pred_2022)
+```
+
+
+
+```{r}
+#save result
+mean_comparison_list_2022 <- list(
+  race = mean_by_race_2022,
+  education = mean_by_educ_2022,
+  dementia = mean_by_dementia_2022
+)
+
+mean_comparison_table_long_2022 <- bind_rows(
+  mean_comparison_list_2022,
+  .id = "grouping_variable"
+) %>%
+  pivot_longer(
+    cols = c(raracem_f, raeduc_f, r16demene_f),
+    names_to = "group_var",
+    values_to = "level",
+    values_drop_na = TRUE
+  ) %>%
+  select(grouping_variable, level, mean_observed, mean_pred) %>%
+  pivot_longer(
+    cols = c(mean_observed, mean_pred),
+    names_to = "wordtot",
+    values_to = "mean"
+  ) %>%
+  mutate(
+    wordtot = recode(
+      wordtot,
+      mean_observed = "observed",
+      mean_pred = "predicted"
+    )
+  ) %>%
+  select(grouping_variable, level, mean, wordtot)
+
+
+
+```
+
+
+```{r}
+cor_covariates_long_2022 <- correlation_comparison_2022 %>%
+  pivot_longer(
+    cols = c(cor_observed, cor_predicted),
+    names_to = "wordtot",
+    values_to = "pearson_correlation"
+  ) %>%
+  mutate(
+    grouping_variable = "correlation",
+    wordtot = recode(
+      wordtot,
+      cor_observed = "observed",
+      cor_predicted = "predicted"
+    ),
+    level = recode(
+      variable,
+      inf2riwage = "Age and word total score",
+      raedyrs   = "Years of education and word total score"
+    )
+  ) %>%
+  select(grouping_variable, level, pearson_correlation, wordtot)
+
+```
+
+
+```{r}
+diag_result_2022<-bind_rows(cor_jorm_wordtot_2022,mean_comparison_table_long_2022,cor_covariates_long_2022,cv_metrics_2022,cor_pred_2022)
+```
+
+
+```{r}
+# write.csv(
+#   diag_result_2022,
+#   "diag_result_2022.csv",
+#   row.names = FALSE
+# )
+```
+
+
+
+```{r}
+#Reshape to long format to match the 2016 plotting structure
+plot_df_mean_2022 <- mean_comparison_table_long_2022 %>%
+  filter(grouping_variable == "dementia") %>%
+  mutate(
+    wordtot = factor(
+      wordtot,
+      levels = c("observed", "predicted"),
+      labels = c("Observed", "Predicted")
+    ),
+    x_level = case_when(
+      level == "No"  ~ "Never reported dementia",
+      level == "Yes" ~ "Ever reported dementia",
+      TRUE ~ as.character(level)
+    )
+  )
+
+
+#Manuscript version
+mean_plot_2022 <- ggplot(plot_df_mean_2022, aes(x = x_level, y = mean, fill = wordtot)) +
+  geom_col(position = "dodge", width = 0.7) +
+  scale_fill_manual(
+    values = c(
+      Observed  = "#A5C882",
+      Predicted = "#F7DD72"
+    )
+  ) +
+  labs(
+    x = NULL,
+    y = "Mean total word recall score",
+    fill = NULL
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "top",
+    axis.text.x  = element_text(angle = 0, hjust = 0.5, size = 14),
+    axis.text.y  = element_text(size = 14),
+    axis.title.y = element_text(size = 16),
+    legend.text  = element_text(size = 14)
+  )
+
+mean_plot_2022
+
+#Poster version
+mean_plot_poster_2022 <- ggplot(plot_df_mean_2022, aes(x = x_level, y = mean, fill = wordtot)) +
+  geom_col(position = "dodge", width = 0.7) +
+  scale_fill_manual(
+    values = c(
+      Observed  = "#C44521",
+      Predicted = "#F2C14E"
+    )
+  ) +
+  labs(
+    x = NULL,
+    y = "Mean total word recall score",
+    fill = NULL
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "top",
+    axis.text.x  = element_text(angle = 0, hjust = 0.5, size = 14),
+    axis.text.y  = element_text(size = 14),
+    axis.title.y = element_text(size = 16),
+    legend.text  = element_text(size = 14)
+  )
+
+mean_plot_poster_2022
+ 
+# ggsave(
+#   filename = "mean_plot_2022.png",
+#   plot = mean_plot_2022,
+#   path = "",
+#   width = 5.5,
+#   height = 6,
+#   dpi = 300
+# )
+# 
+# ggsave(
+#   filename = "mean_plot_2022_poster.png",
+#   plot = mean_plot_poster_2022,
+#   path = "",
+#   width = 5.5,
+#   height = 6,
+#   dpi = 300
+# )
+
+```
+
+
+
+########association with Jorm score and diagnostics#######
+
+```{r}
+#Check for missing values in the variables to be used in the analysis
+summary(hcap_merged_data$raracem_f)
+summary(respondent_informant_data$raracem_f)
+
+summary(hcap_merged_data$raeduc_f)
+summary(respondent_informant_data$raeduc_f)
+
+summary(hcap_merged_data$inf1jorm_score)
+summary(respondent_informant_data$inf1jorm_score)
+
+summary(hcap_merged_data$inf1riwage)
+summary(respondent_informant_data$inf1riwage)
+
+#remove missing
+hcap_merged_data_clean <- hcap_merged_data %>%
+  filter(!is.na(raracem_f) & !is.na(raeduc_f) & !is.na(inf1jorm_score)& !is.na(inf1riwage))
+#3181 315 individuals were removed
+
+respondent_informant_data_clean <- respondent_informant_data %>%
+  filter(!is.na(raracem_f) & !is.na(raeduc_f) & !is.na(inf1jorm_score)& !is.na(inf1riwage))
+#3032 2 individuals were removed
+```
+
+
+```{r}
+#2022
+#Check for missing values in the variables to be used in the analysis
+summary(hcap_merged_data_2022$raracem_f)
+summary(respondent_informant_data_2022$raracem_f)
+
+summary(hcap_merged_data_2022$raeduc_f)
+summary(respondent_informant_data_2022$raeduc_f)
+
+summary(hcap_merged_data_2022$inf2jorm_score)
+summary(respondent_informant_data_2022$inf2jorm_score)
+
+summary(hcap_merged_data_2022$inf2riwage)
+summary(respondent_informant_data_2022$inf2riwage)
+
+#remove missing
+hcap_merged_data_clean_2022 <- hcap_merged_data_2022 %>%
+  filter(!is.na(raracem_f) & !is.na(raeduc_f) & !is.na(inf2jorm_score)& !is.na(inf2riwage))
+#2762 376 individuals were removed
+
+respondent_informant_data_clean_2022 <- respondent_informant_data_2022 %>%
+  filter(!is.na(raracem_f) & !is.na(raeduc_f) & !is.na(inf2jorm_score)& !is.na(inf2riwage))
+#2693 6 individuals were removed
+```
+
+
+
+```{r}
+#Examine the differences in average jorm scores(For categorical variable) and pearson correlation(for continuous variables) across these variables (in proxy+respondent, and in everyone with jorm score in HCAP)
+pr_race<-respondent_informant_data_clean %>%
+  group_by(raracem_f) %>%
+  summarise(
+    mean_jorm_proxy_respondent= mean(inf1jorm_score, na.rm = TRUE)
+  )
+
+pr_race
+
+pr_raeduc<-respondent_informant_data_clean %>%
+  group_by(raeduc_f) %>%
+  summarise(
+    mean_jorm_proxy_respondent= mean(inf1jorm_score, na.rm = TRUE)
+  )
+
+pr_raeduc
+
+pr_r13demene<-respondent_informant_data_clean %>%
+  group_by(r13demene_f) %>%
+  summarise(
+    mean_jorm_proxy_respondent= mean(inf1jorm_score, na.rm = TRUE)
+  )
+
+pr_r13demene
+
+all_race<-hcap_merged_data_clean %>%
+  group_by(raracem_f) %>%
+  summarise(
+    mean_jorm_all = mean(inf1jorm_score, na.rm = TRUE)
+  )
+all_race
+
+
+all_raeduc<-hcap_merged_data_clean %>%
+  group_by(raeduc_f) %>%
+  summarise(
+    mean_jorm_all = mean(inf1jorm_score, na.rm = TRUE)
+  )
+
+all_raeduc
+
+
+all_r13demene<-hcap_merged_data_clean %>%
+  group_by(r13demene_f) %>%
+  summarise(
+    mean_jorm_all = mean(inf1jorm_score, na.rm = TRUE)
+  )
+
+all_r13demene
+
+combined_race <- full_join(all_race, pr_race, by = "raracem_f")
+combined_raeduc <- full_join(all_raeduc, pr_raeduc, by = "raeduc_f")
+combined_r13demene <- full_join(all_r13demene, pr_r13demene, by = "r13demene_f")
+
+
+
+vars_to_check <- c("inf1riwage")
+
+correlation_comparison_pr <- map_dfr(vars_to_check, function(varname) {
+  tibble(
+    variable = varname,
+    cor_proxy_respondent_age = cor(respondent_informant_data_clean[[varname]], respondent_informant_data_clean$inf1jorm_score, method = "pearson")
+  )
+})
+
+correlation_comparison_pr
+
+
+
+correlation_comparison_all <- map_dfr(vars_to_check, function(varname) {
+  tibble(
+    variable = varname,
+    cor_all_age = cor(hcap_merged_data_clean[[varname]], hcap_merged_data_clean$inf1jorm_score, method = "pearson")
+  )
+})
+
+correlation_comparison_all
+
+combined_age <- list(
+  correlation_comparison_pr,
+  correlation_comparison_all
+) %>%
+  reduce(full_join, by = "variable")
+```
+
+
+
+```{r}
+#2022
+#Examine the differences in average jorm scores(For categorical variable) and pearson correlation(for continuous variables) across these variables (in proxy+respondent, and in everyone with jorm score in HCAP)
+pr_race_2022<-respondent_informant_data_clean_2022 %>%
+  group_by(raracem_f) %>%
+  summarise(
+    mean_jorm_proxy_respondent= mean(inf2jorm_score, na.rm = TRUE)
+  )
+
+pr_race_2022
+
+pr_raeduc_2022<-respondent_informant_data_clean_2022 %>%
+  group_by(raeduc_f) %>%
+  summarise(
+    mean_jorm_proxy_respondent= mean(inf2jorm_score, na.rm = TRUE)
+  )
+
+pr_raeduc_2022
+
+pr_r16demene_2022<-respondent_informant_data_clean_2022 %>%
+  group_by(r16demene_f) %>%
+  summarise(
+    mean_jorm_proxy_respondent= mean(inf2jorm_score, na.rm = TRUE)
+  )
+
+pr_r16demene_2022
+
+all_race_2022<-hcap_merged_data_clean_2022 %>%
+  group_by(raracem_f) %>%
+  summarise(
+    mean_jorm_all = mean(inf2jorm_score, na.rm = TRUE)
+  )
+all_race_2022
+
+
+all_raeduc_2022<-hcap_merged_data_clean_2022 %>%
+  group_by(raeduc_f) %>%
+  summarise(
+    mean_jorm_all = mean(inf2jorm_score, na.rm = TRUE)
+  )
+
+all_raeduc_2022
+
+
+all_r16demene_2022<-hcap_merged_data_clean_2022 %>%
+  group_by(r16demene_f) %>%
+  summarise(
+    mean_jorm_all = mean(inf2jorm_score, na.rm = TRUE)
+  )
+
+all_r16demene_2022
+
+combined_race_2022 <- full_join(all_race_2022, pr_race_2022, by = "raracem_f")
+combined_raeduc_2022 <- full_join(all_raeduc_2022, pr_raeduc_2022, by = "raeduc_f")
+combined_r16demene_2022 <- full_join(all_r16demene_2022, pr_r16demene_2022, by = "r16demene_f")
+
+
+
+vars_to_check_2022 <- c("inf2riwage")
+
+correlation_comparison_pr_2022 <- map_dfr(vars_to_check_2022, function(varname) {
+  tibble(
+    variable = varname,
+    cor_proxy_respondent_age = cor(respondent_informant_data_clean_2022[[varname]], respondent_informant_data_clean_2022$inf2jorm_score, method = "pearson")
+  )
+})
+
+correlation_comparison_pr_2022
+
+
+
+correlation_comparison_all_2022 <- map_dfr(vars_to_check_2022, function(varname) {
+  tibble(
+    variable = varname,
+    cor_all_age = cor(hcap_merged_data_clean_2022[[varname]], hcap_merged_data_clean_2022$inf2jorm_score, method = "pearson")
+  )
+})
+
+correlation_comparison_all_2022
+
+combined_age <- list(
+  correlation_comparison_pr_2022,
+  correlation_comparison_all_2022
+) %>%
+  reduce(full_join, by = "variable")
+```
+
+
+
+##########Compare jorm scores for people with proxy + respondent vs. proxy only############
+
+
+```{r}
+#Compare jorm scores for people with proxy + respondent vs. proxy only (mean, histogram)
+#Filter proxy only
+hcap_merged_data_proxy<-hcap_merged_data%>%
+  filter(r1iflag==3)
+
+#Check whether inf1jorm_score has any missing values
+summary(hcap_merged_data_proxy$inf1jorm_score)
+summary(respondent_informant_data$inf1jorm_score)
+
+mean(hcap_merged_data_proxy$inf1jorm_score)#Informant only
+mean(respondent_informant_data$inf1jorm_score)#Respondent and Informant
+
+#Use an overlaid histogram to compare the Jorm scores between the two groups.
+hcap_merged_data_proxy_plot<-hcap_merged_data_proxy%>%
+  select(hhidpn,inf1jorm_score)
+
+respondent_informant_data_plot<-respondent_informant_data%>%
+  select(hhidpn,inf1jorm_score)
+
+
+combined_plot <- bind_rows(
+  hcap_merged_data_proxy_plot %>% mutate(group = "Proxy only"),
+  respondent_informant_data_plot %>% mutate(group = "Proxy + Respondent")
+)
+
+p2 <- ggplot(combined_plot, aes(x = inf1jorm_score, fill = group)) +
+  geom_histogram(
+    aes(y = after_stat(count)), 
+    position = "identity", alpha = 0.5, bins = 20
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Proxy only" = "#5AB1BB",
+      "Proxy + Respondent" = "#4E6766"
+    )
+  ) + 
+  scale_x_continuous(breaks = seq(1, 5, by = 0.5)) +
+  labs(
+    title = "Overlaid Histogram of Jorm Score by Group",
+    x = "Jorm Score",
+    y = "Count",
+    fill = "Group"
+  ) +
+  theme_minimal()
+
+p2
+```
+
+########Diagnostics in full 2016 core sample#######
+
+```{r}
+#Diagnostics in full 2016 core sample:
+#compare mean word total for people with vs. without proxies; use actual word total for respondents, predicted word total from final model for people with proxies
+
+#Read in 2016 rand fat file
+rand_2016 <- read_sas("h16f2c.sas7bdat")
+names(rand_2016) <-tolower(names(rand_2016))
+rand_2016 <-rand_2016 %>% 
+  mutate(hhidpn = str_pad(hhidpn,9,pad="0"))
+
+
+#pa009:PROXY/SELF INTERVIEW
+table(rand_2016$pa009,exclude=NULL)
+
+rand_2016 <- rand_2016 %>%
+  mutate(pa009_group = case_when(
+    pa009 == 1 ~ "self",
+    pa009 %in% c(2, 3) ~ "proxy"
+  ))
+
+table(rand_2016$pa009_group,exclude=NULL)
+
+#Keep only observations where the type of interview is self
+rand_2016_respondent<-rand_2016%>%
+  filter(pa009_group=="self")
+#19971
+
+#pd 174: word immediate score, pd 184: word delayed score
+summary(rand_2016_respondent$pd184)
+summary(rand_2016_respondent$pd174)
+
+#Remove missing values from the two variables
+rand_2016_respondent_clean <- rand_2016_respondent %>%
+  filter(!is.na(pd184) & !is.na(pd174))
+#19864 remove 107 people
+
+#Caculate WR total score in respondent only group
+rand_2016_respondent_clean<-rand_2016_respondent_clean%>%
+  mutate(wordtot=pd184+pd174)
+
+#Keep only observations where the type of interview is proxy
+rand_2016_proxy<-rand_2016%>%
+  filter(pa009_group=="proxy")
+#941
+
+#Select the variables related to the Jorm questions in preparation for calculating the Jorm score
+rand_2016_proxy<-rand_2016_proxy%>%
+  select(hhidpn,pa009_group,pa009,pd506,pd507,pd508,
+         pd509,pd510,pd511,
+         pd512,pd513,pd514,
+         pd515,pd516,pd517,
+         pd518,pd519,pd520,
+         pd521,pd522,pd523,
+         pd524,pd525,pd526,
+         pd527,pd528,pd529,
+         pd530,pd531,pd532,
+         pd533,pd534,pd535,
+         pd536,pd537,pd538,
+         pd539,pd540,pd541,
+         pd542,pd543,pd544,
+         pd545,pd546,pd547,
+         pd548,pd549,pd550,
+         pd551,pd552,pd553)
+
+
+#Calculate the Jorm score for each question as well as the total Jorm score
+start_vars <- seq(506, 553, by = 3)
+
+rand_2016_score <- rand_2016_proxy
+
+for (i in seq_along(start_vars)) {
+  d_a <- paste0("pd", start_vars[i])
+  d_b <- paste0("pd", start_vars[i] + 1)
+  d_c <- paste0("pd", start_vars[i] + 2)
+  
+  score_var <- paste0("j", i, "score")
+  
+  rand_2016_score <- rand_2016_score %>%
+    mutate(
+      !!score_var := case_when(
+        .data[[d_a]] == 2 ~ 3,
+        .data[[d_b]] == 1 ~ 1,
+        .data[[d_b]] == 2 ~ 2,
+        .data[[d_c]] == 4 ~ 4,
+        .data[[d_c]] == 5 ~ 5,
+        TRUE ~ NA
+      )
+    )
+}
+
+
+rand_2016_score_proxy <- rand_2016_score %>%
+  rowwise() %>%
+  mutate(jorm_score_2016 = round(
+    mean(c_across(starts_with("j") & ends_with("score")), na.rm = TRUE), 3
+  )) %>%
+  ungroup()
+
+
+#Remove individuals with missing Jorm scores
+summary(rand_2016_score_proxy$jorm_score_2016)
+
+rand_2016_score_proxy_clean<-rand_2016_score_proxy%>%
+  filter(!is.na(rand_2016_score_proxy$jorm_score_2016))
+#721 remove 220 people
+```
+
+
+```{r}
+#Use the Tracker file to obtain age in 2016 (page) Prepare the variables for the prediction model
+trkr <- read_dta("trk2022tr_r.dta")
+
+names(trkr) <- tolower(names(trkr))
+trkr <- trkr %>% 
+  mutate(hhidpn = str_pad(paste(hhid, pn, sep = ""), 9, pad = "0"))
+
+trkr_filterd<-trkr%>%
+  select(hhidpn,page)
+
+rand_2016_score_proxy_clean<-rand_2016_score_proxy_clean%>%
+  left_join(trkr_filterd,by="hhidpn")
+
+#page has no missing values, then center page at 75
+summary(rand_2016_score_proxy_clean$page)
+
+rand_2016_score_proxy_clean<-rand_2016_score_proxy_clean%>%
+  mutate(age_centered_75=page-75)
+
+#Use exactly the same knots and related information as before for prediction.
+rand_2016_score_proxy_clean <- rand_2016_score_proxy_clean %>%
+  rename(inf1jorm_score = jorm_score_2016)
+
+rand_2016_score_proxy_clean$pred_wordtot <- predict(final_fit, newdata = rand_2016_score_proxy_clean)
+
+#Compare the mean difference between the actual and predicted value
+mean(rand_2016_score_proxy_clean$pred_wordtot)
+mean(rand_2016_respondent_clean$wordtot)
+```
+
+#########trajectories of Word total##########
+
+```{r}
+#Read in all RAND fat files from 2000 to 2022 to prepare for analyzing trajectories of totoal word recall
+rand_files <- list(
+  "h00f1d.sas7bdat",
+  "h02f2c.sas7bdat",
+  "h04f1c.sas7bdat",
+  "h06f4b.sas7bdat",
+  "h08f3b.sas7bdat",
+  "hd10f6b.sas7bdat",
+  "h12f3a.sas7bdat",
+  "h14f2b.sas7bdat",
+  "h18f2c.sas7bdat",
+  "h20f1b.sas7bdat",
+  "h22e3a.sas7bdat"
+)
+
+rand_years <- c(2000, 2002, 2004, 2006, 2008, 2010, 2012, 2014, 2018, 2020, 2022)
+
+
+rand_list <- lapply(seq_along(rand_files), function(i) {
+  df <- read_sas(rand_files[[i]]) %>%
+    rename_with(tolower) %>%
+    mutate(hhidpn = str_pad(as.character(hhidpn), 9, pad = "0"))
+  df
+})
+
+
+names(rand_list) <- paste0("rand_", rand_years)
+
+list2env(rand_list, envir = .GlobalEnv)
+```
+
+#######2000 Proxy and Self Word Total Scores######
+
+```{r}
+#g514:PROXY/SELF INTERVIEW
+table(rand_2000$g514,exclude=NULL)
+
+rand_2000 <- rand_2000 %>%
+  mutate(g514_group = case_when(
+    g514 == 1 ~ "self",
+    g514 %in% c(2, 3) ~ "proxy"
+  ))
+
+table(rand_2000$g514_group,exclude=NULL)
+
+#Keep only observations where the type of interview is self
+rand_2000_respondent<-rand_2000%>%
+  filter(g514_group=="self")
+#17516
+```
+
+
+
+```{r}
+#Read the Wu algorithm data to obtain the 2000 word immediate and delayed recall scores, because these two variables cannot be found in the Core dataset.
+memimp <- read_sas("dpmemimp_jan2024.sas7bdat")
+
+names(memimp) <- tolower(names(memimp))
+memimp <- memimp %>% 
+  mutate(hhidpn = str_pad(paste(hhid, pn, sep = ""), 9, pad = "0"))
+
+memimp_filtered<-memimp%>%
+  select(hhidpn,wordi00,wordd00)
+
+#Merge the 2000 word immediate and delayed score variables from the wu data into rand_2000_respondent, remove the cases with missing values for these two variables, and then calculate the 2000 word total score.
+
+rand_2000_respondent<-rand_2000_respondent%>%
+  left_join(memimp_filtered,by="hhidpn")
+
+summary(rand_2000_respondent$wordi00,exclude=NULL)
+summary(rand_2000_respondent$wordd00,exclude=NULL)
+
+rand_2000_respondent_clean <- rand_2000_respondent %>%
+  filter(!is.na(wordi00) & !is.na(wordd00))%>%
+  mutate(wordtot_2000=wordi00+wordd00)
+
+#15906 remove 1610
+```
+
+
+
+
+```{r}
+#Calculate 2000 jorm score
+#Keep only observations where the type of interview is proxy
+rand_2000_proxy<-rand_2000%>%
+  filter(g514_group=="proxy")
+#2062
+
+#Select the variables related to the Jorm questions in preparation for calculating the Jorm score
+rand_2000_proxy <- rand_2000_proxy %>%
+  select(hhidpn,g1543,g1544,g1545,
+         g1548,g1549,g1550,
+         g1553,g1554,g1555,
+         g1558,g1559,g1560,
+         g1563,g1564,g1565,
+         g1568,g1569,g1570,
+         g1573,g1574,g1575,
+         g1578,g1579,g1580,
+         g1583,g1584,g1585,
+         g1588,g1589,g1590,
+         g1593,g1594,g1595,
+         g1598,g1599,g1600,
+         g1602,g1603,g1604,
+         g1605,g1606,g1607,
+         g1608,g1609,g1610,
+         g1611,g1612,g1613)
+
+#Calculate the Jorm score for each question as well as the total Jorm score
+start_vars <- c(1543, 1548, 1553, 1558, 1563, 1568,
+                         1573, 1578, 1583, 1588, 1593, 1598,
+                         1602, 1605, 1608, 1611)
+
+
+for (i in seq_along(start_vars)) {
+  d_a <- paste0("g", start_vars[i])
+  d_b <- paste0("g", start_vars[i] + 1)
+  d_c <- paste0("g", start_vars[i] + 2)
+  
+  score_var <- paste0("j", i, "score")
+  
+  rand_2000_proxy <- rand_2000_proxy %>%
+    mutate(
+      !!score_var := case_when(
+        .data[[d_a]] == 2 ~ 3,
+        .data[[d_b]] == 1 ~ 1,
+        .data[[d_b]] == 2 ~ 2,
+        .data[[d_c]] == 4 ~ 4,
+        .data[[d_c]] == 5 ~ 5,
+        TRUE ~ NA
+      )
+    )
+}
+
+rand_2000_score_proxy <- rand_2000_proxy %>%
+  rowwise() %>%
+  mutate(jorm_score_2000 = round(
+    mean(c_across(starts_with("j") & ends_with("score")), na.rm = TRUE), 3
+  )) %>%
+  ungroup()
+
+#Remove individuals with missing Jorm scores
+summary(rand_2000_score_proxy$jorm_score_2000)
+
+rand_2000_score_proxy_clean<-rand_2000_score_proxy%>%
+  filter(!is.na(rand_2000_score_proxy$jorm_score_2000))
+#1355 remove 707 people
+
+```
+
+
+
+```{r}
+#Calculate 2000 proxy word total
+trkr_filterd_2000<-trkr%>%
+  select(hhidpn,gage)
+
+rand_2000_score_proxy_clean<-rand_2000_score_proxy_clean%>%
+  left_join(trkr_filterd_2000,by="hhidpn")
+
+summary(rand_2000_score_proxy_clean$gage)
+
+#gage has no missing values, then center page at 75
+rand_2000_score_proxy_clean<-rand_2000_score_proxy_clean%>%
+  mutate(age_centered_75=gage-75)
+
+#Use exactly the same knots and related information as before for prediction.
+rand_2000_score_proxy_clean <- rand_2000_score_proxy_clean %>%
+  rename(inf1jorm_score = jorm_score_2000)
+
+rand_2000_score_proxy_clean$pred_wordtot_2000 <- predict(final_fit, newdata = rand_2000_score_proxy_clean)
+
+#Compare the mean difference between the actual and predicted value
+summary(rand_2000_score_proxy_clean$pred_wordtot_2000)
+summary(rand_2000_respondent_clean$wordtot_2000)
+```
+
+######Calculate the proxy and self word total scores from 2002 to 2022 (excluding 2016)#####
+
+```{r}
+#2002: ha009  2004:ja009  2006:ka009  2008:la009 2010:ma009  2012:na009  2014:oa009  2018:qa009  2020:ra009 2022:sa009
+
+
+#Recode the type of interview variable for the data from 2002 to 2022(except 2016)
+years <- c(2002, 2004, 2006, 2008, 2010, 2012, 2014, 2018, 2020, 2022)
+var_names <- c("ha009", "ja009", "ka009", "la009", "ma009", 
+               "na009", "oa009", "qa009", "ra009", "sa009")
+
+
+for (i in seq_along(years)) {
+  year <- years[i]
+  var <- var_names[i]
+  group_var <- paste0(var, "_group")
+  
+  df <- get(paste0("rand_", year))
+  
+  cat("Year", year, "-", var, ":\n")
+  print(table(df[[var]], exclude=NULL))
+  cat("\n")
+  
+  df <- df %>%
+    mutate(
+      !!group_var := case_when(
+        .data[[var]] == 1 ~ "self",
+        .data[[var]] %in% c(2, 3) ~ "proxy",
+        TRUE ~ NA
+      )
+    )
+  cat("Year", year, "-", group_var, ":\n")
+  print(table(df[[group_var]], exclude=NULL))
+  cat("\n")
+  assign(paste0("rand_", year), df)
+}
+
+#Then, for each year, keep respondent only
+for (i in seq_along(years)) {
+  year <- years[i]
+  var <- var_names[i]
+  group_var <- paste0(var, "_group")
+  
+  df <- get(paste0("rand_", year))
+  
+  df_filtered <- df %>% filter(.data[[group_var]] == "self")
+  assign(paste0("rand_", year, "_respondent"), df_filtered)
+}
+```
+
+#####self: word total####
+
+
+```{r}
+#2002: word immediate:hd174 delayed:hd184,2004:jd174,jd184, 2006:kd174, kd184, 2008:ld174,ld184, 2010:md174,md184, 2012:nd174,nd184, 2014:od174,od184, 2018:qd174,qd184  2020: rd174,rd184  2022:sd174,sd184
+
+#Check the summary of word immediate and word delayed for each year to confirm the missingness
+#remove word immediate and word delayed missingness
+prefixes <- c("h", "j", "k", "l", "m", "n", "o", "q", "r", "s")
+
+for (i in seq_along(years)) {
+  year <- years[i]
+  prefix <- prefixes[i]
+  
+  var_immediate <- paste0(prefix, "d174")
+  var_delayed   <- paste0(prefix, "d184")
+  
+  df <- get(paste0("rand_", year, "_respondent"))
+  
+  cat("Year", year, "-", var_immediate, "summary:\n")
+  print(summary(df[[var_immediate]]))
+  
+  cat("Year", year, "-", var_delayed, "summary:\n")
+  print(summary(df[[var_delayed]]))
+  
+  df_clean <- df %>%
+    filter(!is.na(.data[[var_immediate]]) & !is.na(.data[[var_delayed]]))
+  
+  assign(paste0("rand_", year, "_respondent_clean"), df_clean)
+}
+
+
+#calculate word total score
+for (i in seq_along(years)) {
+  year <- years[i]
+  prefix <- prefixes[i]
+  
+  var_immediate <- paste0(prefix, "d174")
+  var_delayed   <- paste0(prefix, "d184")
+  wordtot_var   <- paste0("wordtot_", year)
+
+  df <- get(paste0("rand_", year, "_respondent_clean"))
+
+  df <- df %>%
+    mutate(!!wordtot_var := .data[[var_immediate]] + .data[[var_delayed]])
+
+  assign(paste0("rand_", year, "_respondent_clean"), df)
+}
+```
+
+###proxy: jorm score###
+
+```{r}
+#Filter out the proxy‑only data for each year
+for (i in seq_along(years)) {
+  year <- years[i]
+  var <- var_names[i]
+  group_var <- paste0(var, "_group")
+  
+  df <- get(paste0("rand_", year))
+  
+  df_proxy <- df %>% filter(.data[[group_var]] == "proxy")
+
+  assign(paste0("rand_", year, "_proxy"), df_proxy)
+
+}
+
+#Filter the variables related to the Jorm score.
+suffixes <- paste0("d", 506:553)
+
+for (i in seq_along(years)) {
+  year <- years[i]
+  prefix <- prefixes[i]
+
+  vars_to_keep <- paste0(prefix, suffixes)
+
+  df <- get(paste0("rand_", year, "_proxy"))
+  vars_present <- intersect(vars_to_keep, names(df))
+  df_selected <- df %>% select(hhidpn, all_of(vars_present))
+
+
+  assign(paste0("rand_", year, "_proxy"), df_selected)
+}
+
+
+#Calculate the Jorm score for each question as well as the total Jorm score
+start_vars <- seq(506, 553, by = 3)
+
+for (i in seq_along(years)) {
+  year <- years[i]
+  prefix <- prefixes[i]
+  
+  df <- get(paste0("rand_", year, "_proxy"))
+  df_score <- df
+  
+  for (j in seq_along(start_vars)) {
+    d_a <- paste0(prefix, "d", start_vars[j])
+    d_b <- paste0(prefix, "d", start_vars[j] + 1)
+    d_c <- paste0(prefix, "d", start_vars[j] + 2)
+    
+    score_var <- paste0("j", j, "score")
+    
+    df_score <- df_score %>%
+      mutate(
+        !!score_var := case_when(
+          .data[[d_a]] == 2 ~ 3,
+          .data[[d_b]] == 1 ~ 1,
+          .data[[d_b]] == 2 ~ 2,
+          .data[[d_c]] == 4 ~ 4,
+          .data[[d_c]] == 5 ~ 5,
+          TRUE ~ NA
+        )
+      )
+  }
+score_var_name <- paste0("jorm_score_", year)  
+  
+df_score <- df_score %>%
+  rowwise() %>%
+  mutate(
+    !!score_var_name := round(
+      mean(c_across(starts_with("j") & ends_with("score")), na.rm = TRUE),
+      3
+    )
+  ) %>%
+  ungroup()
+  
+  assign(paste0("rand_", year, "_score_proxy"), df_score)
+}
+
+#Check and clean the cases where the final Jorm score is NA.
+for (year in years) {
+  df <- get(paste0("rand_", year, "_score_proxy"))
+  score_var <- paste0("jorm_score_", year)
+  
+  cat("Summary of", score_var, "in rand_", year, "_score_proxy:\n", sep = "")
+  print(summary(df[[score_var]]))
+  cat("\n")
+  
+  df_clean <- df %>%
+    filter(!is.na(.data[[score_var]]))
+  
+  assign(paste0("rand_", year, "_score_proxy_clean"), df_clean)
+}
+```
+
+
+
+###proxy: word total##
+
+```{r}
+#Extract the age variables for the corresponding wave from the trkr file, check for any NAs, and then merge it with the score_proxy_clean dataset for that year.
+for (i in seq_along(years)) {
+  year <- years[i]
+  prefix <- prefixes[i]
+  
+  age_var <- paste0(prefix, "age")
+  
+  trkr_filtered <- trkr %>%
+    select(hhidpn, !!age_var)
+  
+  assign(paste0("trkr_filtered_", year), trkr_filtered)
+  
+  score_data <- get(paste0("rand_", year, "_score_proxy_clean"))
+  
+  merged_data <- score_data %>%
+    left_join(trkr_filtered, by = "hhidpn")
+  
+  cat("Summary of", age_var, "in rand_", year, "_score_proxy_clean with age:\n")
+  print(summary(merged_data[[age_var]]))
+  cat("\n")
+  
+  assign(paste0("rand_", year, "_score_proxy_clean"), merged_data)
+}
+
+#Center the age variable at 75, standardize the Jorm score variable name, and generate the predicted pred_wordtot values
+for (i in seq_along(years)) {
+  year <- years[i]
+  prefix <- prefixes[i]
+  
+  age_var <- paste0(prefix, "age")
+  
+  df <- get(paste0("rand_", year, "_score_proxy_clean"))
+  
+  df <- df %>%
+    mutate(age_centered_75 = .data[[age_var]] - 75)
+  
+  score_var <- paste0("jorm_score_", year)
+  df <- df %>%
+    rename(inf1jorm_score = !!score_var)
+  
+  pred_var <- paste0("pred_wordtot_", year)
+
+  df <- df %>%
+  mutate(!!pred_var := predict(final_fit, newdata = df))
+  
+  assign(paste0("rand_", year, "_score_proxy_clean"), df)
+}
+```
+
+########Organize the data so that it includes the word total, predicted word total####.
+
+
+```{r}
+#Baseline sample selection: keep only respondents in the year 2000 who were aged 50 or older
+trkr_2000<-trkr%>%
+  select(hhidpn,gage)
+
+rand_2000_respondent_clean<-rand_2000_respondent_clean%>%
+  left_join(trkr_2000,by="hhidpn")
+
+summary(rand_2000_respondent_clean$gage)
+
+rand_2000_respondent_clean <- rand_2000_respondent_clean %>%
+  filter(gage >= 50)
+#15456 remove 450
+```
+
+
+```{r}
+#For respondent type data in each year except 2000, keep only those who were in the baseline sample. Save the filtered data as rand_, yr, _respondent_clean, and check how many individuals are retained each year.
+
+years_all <- c(2002, 2004, 2006, 2008, 2010, 2012, 2014, 2016, 2018, 2020, 2022)
+
+hhidpn_2000 <- rand_2000_respondent_clean$hhidpn
+
+filtered_counts <- data.frame(
+  year = integer(),
+  filtered_n = integer()
+)
+
+for (yr in years_all) {
+  df_name <- paste0("rand_", yr, "_respondent_clean")
+  df <- get(df_name)
+  
+  df_filtered <- df %>% filter(hhidpn %in% hhidpn_2000)
+
+  new_name <- paste0("rand_", yr, "_respondent_clean_filtered")
+  assign(new_name, df_filtered)
+  
+  #check how many individuals were retained each year
+  filtered_counts <- rbind(filtered_counts, data.frame(
+    year = yr,
+    filtered_n = nrow(df_filtered)
+  ))
+}
+print(filtered_counts)
+
+```
+
+
+
+```{r}
+#For proxy type data in each year except 2000, keep only those who were in the baseline sample. Save the filtered data as rand_, yr, _score_proxy_clean, and check how many individuals are retained each year.
+
+filtered_score_proxy_counts <- data.frame(
+  year = integer(),
+  filtered_score_proxy_n = integer()
+)
+
+for (yr in years_all) {
+  df <- get(paste0("rand_", yr, "_score_proxy_clean"))
+  df_filtered <- df %>% filter(hhidpn %in% hhidpn_2000)
+  assign(paste0("rand_", yr, "_score_proxy_clean_filtered"), df_filtered)
+  filtered_score_proxy_counts <- rbind(filtered_score_proxy_counts, data.frame(
+    year = yr,
+    filtered_score_proxy_n = nrow(df_filtered)
+  ))
+}
+
+print(filtered_score_proxy_counts)
+```
+
+
+
+```{r}
+#Use the baseline sample as the main table and left join it with the respondent data from all other years.
+rand_2016_respondent_clean_filtered <- rand_2016_respondent_clean_filtered %>%
+  rename(wordtot_2016 = wordtot)
+
+rand_respondent_all <- rand_2000_respondent_clean %>% select(hhidpn,wordtot_2000,gage)
+
+for (yr in years_all) {
+  df <- get(paste0("rand_", yr, "_respondent_clean_filtered"))
+  wordtot_var <- paste0("wordtot_", yr)
+  
+  df_trimmed <- df %>% select(hhidpn, !!sym(wordtot_var))
+  
+  rand_respondent_all <- rand_respondent_all %>%
+    left_join(df_trimmed, by = "hhidpn")
+}
+
+#Then continue merging the pred_wordtot columns from each year's proxy data
+
+rand_2016_score_proxy_clean_filtered <- rand_2016_score_proxy_clean_filtered %>%
+  rename(pred_wordtot_2016 = pred_wordtot)
+
+for (yr in years_all) {
+  df <- get(paste0("rand_", yr, "_score_proxy_clean_filtered"))
+  pred_col <- paste0("pred_wordtot_", yr)
+  
+  df_trimmed <- df %>%
+    select(hhidpn, !!sym(pred_col))
+  
+  rand_respondent_all <- rand_respondent_all %>%
+    left_join(df_trimmed, by = "hhidpn")
+}
+
+rand_respondent_all_proxy<-rand_respondent_all
+```
+
+
+######trajectory plots######
+
+
+```{r}
+#Calculate the mean word total score for self-respondents in each year and summarize the results into a new dataset
+years_all2000 <- c(2000, 2002, 2004, 2006, 2008, 2010, 2012, 2014, 2016, 2018, 2020, 2022)
+
+
+mean_wordtot_df <- data.frame(
+  year = years_all2000,
+  mean_wordtot = sapply(years_all2000, function(yr) {
+    wt_col <- paste0("wordtot_", yr)
+    mean(rand_respondent_all_proxy[[wt_col]], na.rm = TRUE)
+  })
+)
+
+print(mean_wordtot_df)
+
+#Create all_yr columns where each value uses the word total score if it’s not missing, and the predicted word total score if it is.
+year_all <- c(2002, 2004, 2006, 2008, 2010, 2012, 2014, 2016, 2018, 2020, 2022)
+
+for (yr in year_all) {
+  word_col <- paste0("wordtot_", yr)
+  pred_col <- paste0("pred_wordtot_", yr)
+  all_col  <- paste0("all_", yr)
+  
+  rand_respondent_all_proxy[[all_col]] <- ifelse(
+    !is.na(rand_respondent_all_proxy[[word_col]]),
+    rand_respondent_all_proxy[[word_col]],
+    rand_respondent_all_proxy[[pred_col]]
+  )
+}
+
+#Calculate the mean all word total score for each year. The mean all word total represents a combination of both proxy and self respondents, so the sample includes both proxy and self respondents for each year. For the year 2000, use the average word total score from the baseline sample.
+mean_all_df <- data.frame(
+  year = year_all,
+  mean_all_wordtot = sapply(year_all, function(yr) {
+    col <- paste0("all_", yr)
+    mean(rand_respondent_all_proxy[[col]], na.rm = TRUE)
+  })
+)
+
+mean_2000 <- mean(rand_respondent_all_proxy$wordtot_2000, na.rm = TRUE)
+
+mean_all_df <- rbind(
+  data.frame(year = 2000, mean_all_wordtot = mean_2000),
+  mean_all_df
+)
+
+mean_all_df <- mean_all_df[order(mean_all_df$year), ]
+
+print(mean_all_df)
+```
+
+
+
+
+
+```{r}
+#Merge the data containing the mean all word total and the mean self word total, reshape it into a format suitable for a trajectory plot, and then plot the trajectory.
+
+mean_combined_df <- full_join(mean_wordtot_df, mean_all_df, by = "year")
+plot_data <- mean_combined_df %>%
+  pivot_longer(cols = c(mean_wordtot, mean_all_wordtot),
+               names_to = "type",
+               values_to = "value") %>%
+  mutate(
+    type = recode(type,
+                  "mean_wordtot" = "Word total score excluding Proxy",
+                  "mean_all_wordtot" = "Word total score including Proxy")
+  )
+
+ggplot(plot_data, aes(x = year, y = value, color = type, shape = type, linetype = type)) +
+  geom_line(size = 1) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c("#1E152A", "#5AB1BB")) +
+  scale_shape_manual(values = c(15, 18)) +
+  scale_linetype_manual(values = c("dashed", "solid")) +
+  scale_x_continuous(breaks = seq(2000, 2022, by = 2), limits = c(2000, 2022)) +
+  scale_y_continuous(limits = c(6, 12))+
+  theme_minimal() +
+  labs(
+    x = NULL,
+    y = "Word total Score",
+    color = NULL,
+    shape = NULL,
+    linetype = NULL
+  ) +
+  theme(
+    legend.position = "bottom",
+    text = element_text(size = 12)
+  )
+
+```
+
+#######trajectory plots stratified by age in 2000 (50-65, 65+)#######
+
+
+```{r}
+#Split the baseline sample into two groups: "50–65" and "65+", then calculate the self word total score and all word total score for each group in each year to explore whether the increase in word total score in 2018 was driven by age.
+
+summary(rand_respondent_all_proxy$gage)
+
+rand_respondent_all_proxy <- rand_respondent_all_proxy %>%
+  mutate(age_group = if_else(gage <= 65, "50–65", "65+"))
+
+#Calculate the word total score by age group
+years_all2000 <- c(2000, 2002, 2004, 2006, 2008, 2010, 2012, 2014, 2016, 2018, 2020, 2022)
+
+mean_wordtot_df_strat <- bind_rows(lapply(years_all2000, function(yr) {
+  wt_col <- paste0("wordtot_", yr)
+  
+  rand_respondent_all_proxy %>%
+    group_by(age_group) %>%
+    summarise(
+      year = yr,
+      mean_wordtot = mean(.data[[wt_col]], na.rm = TRUE),
+      .groups = "drop"
+    )
+}))
+
+#Calculate the all word total score by age group.
+mean_all_df_strat <- bind_rows(lapply(year_all, function(yr) {
+  all_col <- paste0("all_", yr)
+  
+  rand_respondent_all_proxy %>%
+    group_by(age_group) %>%
+    summarise(
+      year = yr,
+      mean_all_wordtot = mean(.data[[all_col]], na.rm = TRUE),
+      .groups = "drop"
+    )
+}))
+
+
+start_2000 <- mean_wordtot_df_strat %>%
+  filter(year == 2000) %>%
+  rename(mean_all_wordtot = mean_wordtot)
+
+
+mean_all_df_strat <- bind_rows(start_2000, mean_all_df_strat)
+
+mean_combined_df_strat <- full_join(mean_wordtot_df_strat, mean_all_df_strat,
+                                    by = c("year", "age_group"))
+
+```
+
+
+
+```{r}
+plot_data_strat <- mean_combined_df_strat %>%
+  pivot_longer(cols = c(mean_wordtot, mean_all_wordtot),
+               names_to = "type",
+               values_to = "value") %>%
+  mutate(
+    type = recode(type,
+                  "mean_wordtot" = "Word total score excluding Proxy",
+                  "mean_all_wordtot" = "Word total score including Proxy"))
+
+
+plot_50_65 <- ggplot(filter(plot_data_strat, age_group == "50–65"),
+                     aes(x = year, y = value, color = type, shape = type, linetype = type)) +
+  geom_line(size = 1) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c("#1E152A", "#5AB1BB")) +
+  scale_shape_manual(values = c(15, 18)) +
+  scale_linetype_manual(values = c("dashed", "solid")) +
+  scale_x_continuous(breaks = seq(2000, 2022, 2), limits = c(2000, 2022)) +
+  scale_y_continuous(limits = c(6, 12))+
+  theme_minimal() +
+  labs(
+    title = "Age 50–65 in 2000",
+    x = NULL,
+    y = "Word total Score",
+    color = NULL,
+    shape = NULL,
+    linetype = NULL
+  ) +
+  theme(
+    legend.position = "bottom",
+    text = element_text(size = 12)
+  )
+
+print(plot_50_65)
+
+```
+
+
+```{r}
+#Reshape the data into a format suitable for plotting a trajectory plot, and then plot the trajectory plots for the 50–65 and 65+ age groups.
+plot_65_plus <- ggplot(filter(plot_data_strat, age_group == "65+"),
+                       aes(x = year, y = value, color = type, shape = type, linetype = type)) +
+  geom_line(size = 1) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c("#1E152A", "#5AB1BB")) +
+  scale_shape_manual(values = c(15, 18)) +
+  scale_linetype_manual(values = c("dashed", "solid")) +
+  scale_x_continuous(breaks = seq(2000, 2022, 2), limits = c(2000, 2022)) +
+  scale_y_continuous(limits = c(6, 12))+
+  theme_minimal() +
+  labs(
+    title = "Age 65+ in 2000",
+    x = NULL,
+    y = "Word total Score",
+    color = NULL,
+    shape = NULL,
+    linetype = NULL
+  ) +
+  theme(
+    legend.position = "bottom",
+    text = element_text(size = 12)
+  )
+
+print(plot_65_plus)
+
+```
+
+######IPW analyses#######
+
+
+```{r}
+#Read the RAND Longitudinal file to obtain variables such as race, self-rated health, ADL, and others
+rand <- read_sas("randhrs1992_2022v1.sas7bdat")
+
+names(rand) <- tolower(names(rand))
+
+rand <- rand %>% 
+  mutate(hhidpn = str_pad(hhidpn,9,pad="0"))
+
+#create race_ethnicity
+#race
+table(rand$raracem,exclude=NULL)
+rand$raracemf = factor(rand$raracem, 
+                                      levels = c(1,2,3), 
+                                      labels = c("White/Caucasian","Black/African American","Other"))
+table(rand$raracemf,exclude=NULL)
+
+
+
+#Hispanic
+table(rand$rahispan,exclude=NULL)
+rand$rahispanf = factor(rand$rahispan, 
+                                      levels = c(0,1), 
+                                      labels = c("Not Hispanic","Hispanic"))
+
+table(rand$rahispanf,exclude=NULL)
+
+
+rand <- rand %>%
+  mutate(race_ethnicity = case_when(
+    rahispanf == "Hispanic" ~ "Hispanic",
+    raracemf == "White/Caucasian" & rahispanf == "Not Hispanic" ~ "Non-Hispanic White",
+    raracemf == "Black/African American" & rahispanf == "Not Hispanic" ~ "Non-Hispanic Black",
+    raracemf == "Other" & rahispanf == "Not Hispanic" ~ "Non-Hispanic Other",
+    TRUE ~ NA
+  ))
+
+table(rand$race_ethnicity,exclude=NULL)
+```
+
+
+
+
+
+
+```{r}
+#Perform a full join on the proxy and self data for each year after filtering to include only individuals from the baseline sample. Then, left join the RAND and Tracker data to obtain all variables needed for the IPW analysis, and recode certain variables as needed
+#The Tracker file is used to obtain age for each wave, and the RAND Fat file is used to obtain the type of interview variable.
+wave_years <- c(2002, 2004, 2006, 2008, 2010, 2012, 2014, 2016, 2018, 2020, 2022)
+wave_letters <- c("h", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s")
+wave_numbers <- c(6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16)
+
+prepare_ipw_data <- function(year) {
+  wave_letter <- wave_letters[which(wave_years == year)]
+  wave_number <- wave_numbers[which(wave_years == year)]
+
+  respondent_name <- paste0("rand_", year, "_respondent_clean_filtered")
+  proxy_name <- paste0("rand_", year, "_score_proxy_clean_filtered")
+  rand_year_name <- paste0("rand_", year)
+
+  respondent <- get(respondent_name)
+  proxy <- get(proxy_name)
+  rand_year <- get(rand_year_name)
+
+  rand_wordtot <- respondent %>%
+    select(hhidpn, !!sym(paste0("wordtot_", year)))
+
+  rand_pred_wordtot <- proxy %>%
+    select(hhidpn, !!sym(paste0("pred_wordtot_", year)))
+
+  rand_wordtot_all <- full_join(rand_wordtot, rand_pred_wordtot, by = "hhidpn")
+
+  shlt_var <- paste0("r", wave_number, "shlt")
+  adl_var <- paste0("r", wave_number, "adl5a")
+  iadl_var <- paste0("r", wave_number, "iadl5a")
+
+  rand_filter <- rand %>%
+    select(
+      hhidpn, ragender, raedyrs, race_ethnicity,
+      !!sym(shlt_var), !!sym(adl_var), !!sym(iadl_var)
+    )
+
+  age_var <- paste0(wave_letter, "age")
+  trkr_filter <- trkr %>%
+    select(hhidpn, age = !!sym(age_var))
+
+  group_var <- paste0(wave_letter, "a009_group")
+
+  ipw_data <- rand_wordtot_all %>%
+    left_join(rand_filter, by = "hhidpn") %>%
+    left_join(trkr_filter, by = "hhidpn") %>%
+    left_join(
+      rand_year %>% select(hhidpn, type_of_interview = !!sym(group_var)),
+      by = "hhidpn"
+    )
+  
+  ipw_data$race_ethnicityf <- factor(
+  ipw_data$race_ethnicity,
+  levels = c(
+    "Non-Hispanic White",
+    "Non-Hispanic Black",
+    "Hispanic",
+    "Non-Hispanic Other"
+  )
+)
+  ipw_data$ragenderf <- factor(ipw_data$ragender, levels = c(1, 2), labels = c("Male", "Female"))
+  ipw_data$srh <- case_when(
+    ipw_data[[shlt_var]] %in% c(4, 5) ~ 1,
+    ipw_data[[shlt_var]] %in% c(1, 2, 3) ~ 0,
+    TRUE ~ NA)
+  ipw_data$srh <- factor(ipw_data$srh, levels = c(0, 1), labels = c("Excellent/very good/good", "Fair/poor"))
+  
+  assign(paste0("ipw_data_", year), ipw_data, envir = .GlobalEnv)
+
+  return(ipw_data)
+}
+
+year_all <- c(2002, 2004, 2006, 2008, 2010, 2012, 2014, 2016, 2018, 2020, 2022)
+lapply(year_all, prepare_ipw_data)
+
+```
+
+
+```{r}
+#Check how many rows have missing values each year for the variables "age", "raedyrs", "race_ethnicityf", "ragenderf", self-rated health, ADL, and IADLs, and then drop those rows with missing values.
+drop_counts <- sapply(seq_along(wave_years), function(i) {
+  year <- wave_years[i]
+  wave_num <- wave_numbers[i]
+  
+  df <- get(paste0("ipw_data_", year))
+  
+  vars <- c("age", "raedyrs", "race_ethnicityf", "ragenderf",
+            paste0("r", wave_num, "shlt"),
+            paste0("r", wave_num, "adl5a"),
+            paste0("r", wave_num, "iadl5a"))
+  
+  sum(!complete.cases(df[, vars]))
+})
+
+drop_summary <- data.frame(
+  year = wave_years,
+  n_dropped = drop_counts
+)
+
+#drop na
+for (i in seq_along(wave_years)) {
+  year <- wave_years[i]
+  wave_num <- wave_numbers[i]
+  
+  data_name <- paste0("ipw_data_", year)
+  df <- get(data_name)
+
+  vars_to_check <- c("age", "raedyrs", "race_ethnicityf", "ragenderf",
+                     paste0("r", wave_num, "shlt"),
+                     paste0("r", wave_num, "adl5a"),
+                     paste0("r", wave_num, "iadl5a"))
+  
+  clean_df <- df %>% filter(complete.cases(across(all_of(vars_to_check))))
+  
+  assign(paste0("ipw_data_clean_", year), clean_df, envir = .GlobalEnv)
+}
+```
+
+
+
+
+```{r}
+#Fit a logistic regression model for each year with the outcome being type_of_interview == 'self', and review the model summary for each year.
+for (i in seq_along(wave_years)) {
+  year <- wave_years[i]
+  wave_num <- wave_numbers[i]
+  
+  data_name <- paste0("ipw_data_clean_", year)
+  df <- get(data_name)
+  
+  adl_var <- paste0("r", wave_num, "adl5a")
+  iadl_var <- paste0("r", wave_num, "iadl5a")
+  
+  formula <- as.formula(paste0("type_of_interview == 'self' ~ age + raedyrs + race_ethnicityf + ragenderf + srh + ",
+                               adl_var, " + ", iadl_var))
+  
+  model <- glm(formula, data = df, family = binomial(link = "logit"))
+  
+  assign(paste0("ipw_model_", year), model, envir = .GlobalEnv)
+}
+
+
+for (i in seq_along(wave_years)) {
+  year <- wave_years[i]
+  model_name <- paste0("ipw_model_", year)
+  model <- get(model_name)
+  
+  cat("======== Summary for year:", year, "========\n")
+  print(summary(model))
+  cat("\n\n")
+}
+
+```
+
+
+
+
+
+```{r}
+#Use each year's model to predict the probability of being a self-respondent (p_probself) for all individuals, and then compute the IPW weight only for those whose type_of_interview is "self."
+for (i in seq_along(wave_years)) {
+  year <- wave_years[i]
+  
+  model_name <- paste0("ipw_model_", year)
+  data_name <- paste0("ipw_data_clean_", year)
+  
+  model <- get(model_name)
+  df <- get(data_name)
+  
+  df <- df %>%
+    mutate(
+      p_probself = predict(model, type = "response"),
+      ipw_weight = ifelse(type_of_interview == "self", 1 / p_probself, NA)
+    )
+  
+  assign(paste0("ipw_data_clean_", year), df, envir = .GlobalEnv)
+}
+
+
+#Computes the IPW‑weighted mean word total score for self‑respondents in each year and stores the results in a summary table.
+weighted_means_df <- data.frame(year = integer(), weighted_wordtotal_mean = numeric())
+
+for (year in wave_years) {
+  data_name <- paste0("ipw_data_clean_", year)
+  df <- get(data_name)
+  result <- df %>%
+    filter(type_of_interview == "self") %>%
+    summarise(weighted_wordtotal_mean = weighted.mean(.data[[paste0("wordtot_", year)]], 
+                                             w = ipw_weight))
+  result$year <- year
+  weighted_means_df <- bind_rows(weighted_means_df, result)
+}
+
+weighted_means_df
+```
+
+
+########diagnostics######
+
+```{r}
+#Examine the density plot of p_probself for each year, overlaid by proxy and self respondents, to assess diagnostics
+for (year in wave_years) {
+  data_name <- paste0("ipw_data_clean_", year)
+  df <- get(data_name)
+  
+  df$type_of_interview <- factor(df$type_of_interview,
+                                 levels = c("self", "proxy"),
+                                 labels = c("self", "proxy"))
+  
+  assign(data_name, df)
+  
+  p <- ggplot(df, aes(x = p_probself, fill = type_of_interview, color = type_of_interview)) +
+    geom_density(alpha = 0.4) +
+    labs(
+      title = paste("Predicted Probability of Being Self-Respondent (", year, ")", sep = ""),
+      x = "Predicted Probability",
+      y = "Density",
+      fill = "Interview Type",
+      color = "Interview Type"
+    ) +
+    theme_minimal() +
+    theme(text = element_text(size = 14))
+  
+  print(p)
+}
+```
+
+
+
+```{r}
+#Plot the histogram of IPW weights for each year and check whether the sum of IPW weights is approximately equal to the actual number of sample, as well as examine the summary statistics of the weights for diagnostics.
+for (year in wave_years) {
+  data_name <- paste0("ipw_data_clean_", year)
+  df <- get(data_name)
+  
+  self_df <- df %>%
+    filter(type_of_interview == "self")
+  
+  p <- ggplot(self_df, aes(x = ipw_weight)) +
+    geom_histogram(binwidth = 0.1, fill = "#5AB1BB", color = "white") +
+    labs(
+      title = paste("Histogram of IPW Weights (Self Respondents) -", year),
+      x = "IPW Weight",
+      y = "Count"
+    ) +
+    theme_minimal()
+  
+  print(p)
+  
+  cat("Year:", year,
+      "- Sum of IPW Weights:", round(sum(self_df$ipw_weight, na.rm = TRUE), 2),
+      "| Actual number:", nrow(df), "\n")
+  
+  print(summary(self_df$ipw_weight))
+  cat("\n")
+}
+```
+
+
+########Final trajectory plot######
+
+
+```{r}
+#Convert the data containing the Weighted word total score into the format needed for plotting, and then merge it with the existing plot data so that we can draw the figure with all three trajectory lines.
+
+weighted_plot_data <- weighted_means_df %>%
+  rename(value = weighted_wordtotal_mean) %>%
+  mutate(type = "Weighted word total score")
+
+#Add the 2000 Weighted word total score (which matches the values for Word total score excluding Proxy and Word total score including Proxy) to weighted_plot_data so it can be merged later.
+weighted_2000 <- plot_data %>%
+  filter(year == 2000, type == "Word total score excluding Proxy") %>%
+  select(year, value) %>%
+  mutate(type = "Weighted word total score")
+
+weighted_plot_data_full <- bind_rows(weighted_2000, weighted_plot_data)
+
+plot_data_combined <- bind_rows(plot_data, weighted_plot_data_full)
+
+#Convert type into a factor and set the factor order so that each type has a consistent, fixed color
+plot_data_combined$type <- factor(
+  plot_data_combined$type,
+  levels = c(
+    "Word total score excluding Proxy",
+    "Weighted word total score",
+    "Word total score including Proxy"
+  )
+)
+
+
+ggplot(plot_data_combined, aes(x = year, y = value, color = type, shape = type, linetype = type)) +
+  geom_line(size = 1) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c("#1E152A", "#4E6766","#5AB1BB")) +
+  scale_shape_manual(values = c(15, 18, 17)) +
+  scale_linetype_manual(values = c("dashed", "solid", "dotdash")) +
+  scale_x_continuous(breaks = seq(2000, 2022, by = 2), limits = c(2000, 2022)) +
+  scale_y_continuous(limits = c(6, 12))+
+  theme_minimal() +
+  labs(
+    x = NULL,
+    y = "Word total Score",
+    color = NULL,
+    shape = NULL,
+    linetype = NULL
+  ) +
+  theme(
+    legend.position = "bottom",
+    text = element_text(size = 12)
+  )
+```
+
+
+
+########GEE analysis###
+
+
+```{r}
+#for respondent only
+#Convert rand_respondent_all into long format to prepare for the GEE model, then drop rows with missing wordtot values and keep only individuals who have at least two observations
+rand_respondent_all_long <- rand_respondent_all %>%
+  pivot_longer(
+    cols = starts_with("wordtot_"),
+    names_to = "year",
+    names_prefix = "wordtot_",
+    values_to = "wordtot"
+  ) %>%
+  mutate(
+    year = as.numeric(year),
+    time_since_2000 = year - 2000
+  )%>%
+  select(-starts_with("pred_wordtot_"))
+
+
+rand_respondent_all_long_cleaned <- rand_respondent_all_long %>%
+  filter(!is.na(wordtot))
+
+#fit gee model
+gee_respondent<- geeglm(wordtot ~ time_since_2000, id = hhidpn, data = rand_respondent_all_long_cleaned, 
+                        family = gaussian)
+
+summary(gee_respondent)
+```
+
+
+```{r}
+#for respondent and proxy
+#Convert rand_respondent_all_proxy into long format to prepare for the GEE model, then drop rows with missing wordtot values and keep only individuals who have at least two observations
+rand_respondent_all_proxy <- rand_respondent_all_proxy %>%
+  mutate(all_2000 = wordtot_2000)
+
+rand_respondent_all_proxy_long <- rand_respondent_all_proxy %>%
+  pivot_longer(
+    cols = starts_with("all_"),
+    names_to = "year",
+    values_to = "all_score"
+  ) %>%
+  mutate(
+    year = as.numeric(sub("all_", "", year)),
+    time_since_2000 = year - 2000
+  )%>%
+  select(hhidpn,year,all_score,time_since_2000)%>%
+    arrange(hhidpn, year)
+
+
+rand_respondent_all_proxy_long_cleaned <- rand_respondent_all_proxy_long  %>%
+  filter(!is.na(all_score))
+
+#fit gee model
+gee_respondent_proxy<- geeglm(all_score ~ time_since_2000, id = hhidpn, 
+                              data = rand_respondent_all_proxy_long_cleaned, 
+                        family = gaussian)
+
+summary(gee_respondent_proxy)
+```
+
+
+
+```{r}
+#for respondent weight
+#Show the remaining number of self type interviews for each year after removing observations with missing covariates in the IPW analysis. This count will differ from the drop summary, because the drop summary includes both proxy and respondent interviews. So the cleaned IPW sample size and the respondent-only analysis sample size are not the same.
+for (yr in year_all) {
+  df_name <- paste0("ipw_data_clean_", yr)
+  df <- get(df_name)
+  
+  df_self <- df %>% filter(type_of_interview == "self")
+  
+  cat("Year:", yr, ":", nrow(df_self), "\n")
+}
+
+
+#Convert each of the ipw_data_clean_ datasets into long format and then merge them.
+clean_list <- lapply(year_all, function(yr) {
+  
+  df <- get(paste0("ipw_data_clean_", yr))
+  
+  df %>%
+    select(
+      hhidpn,
+      wordtot = !!sym(paste0("wordtot_", yr)),
+      ipw_weight
+    ) %>%
+    mutate(year = yr)
+})
+
+ipw_long <- bind_rows(clean_list)%>%
+  arrange(hhidpn,year)%>%
+  mutate(
+    time_since_2000 = year - 2000)
+
+#Add the data for the year 2000
+rand_2000_respondent_clean_long<-rand_2000_respondent_clean%>%
+  select(hhidpn,wordtot_2000)%>%
+  select(
+    hhidpn,
+    wordtot = wordtot_2000
+  ) %>%
+  mutate(year = 2000,time_since_2000 = 0,ipw_weight=1)
+
+
+ipw_weights_data<-bind_rows(ipw_long,rand_2000_respondent_clean_long)%>%
+  arrange(hhidpn,year)%>%
+  filter(!is.na(wordtot))
+
+
+#fit gee model
+gee_respondent_weight<- geeglm(wordtot ~ time_since_2000, id = hhidpn, 
+                              data = ipw_weights_data, weights=ipw_weight,
+                        family = gaussian)
+
+summary(gee_respondent_weight)
+```
+
+
+
+
+
+
+```{r}
+#From fitted model, predict wordtot on fake dataset of years 2000-2022.
+newdata <- data.frame(
+  time_since_2000 = seq(0, 22, by = 0.2)
+)
+
+newdata$pred_resp <- predict(gee_respondent, newdata = newdata)
+newdata$pred_proxy <- predict(gee_respondent_proxy, newdata = newdata)
+newdata$pred_weight <- predict(gee_respondent_weight, newdata = newdata)
+
+#old:
+# ggplot(newdata, aes(x = time_since_2000)) +
+#   geom_line(aes(y = pred_resp, color = "Respondent Only"), size = 1.2) +
+#   geom_line(aes(y = pred_proxy, color = "Respondent + Proxy"), size = 1.2) +
+#   geom_line(aes(y = pred_weight, color = "IPW Weighted"), size = 1.2) +
+#   labs(
+#     y = "Predicted Word Recall Score",
+#     x = "Years Since 2000",
+#     color = "Model"
+#   ) +
+#   theme_minimal(base_size = 14)
+
+p<-ggplot(newdata, aes(x = time_since_2000)) +
+  geom_line(
+    aes(y = pred_resp, color = "Respondent only"),
+    size = 1.2
+  ) +
+  geom_line(
+    aes(y = pred_weight, color = "Respondents only, with IPW"),
+    size = 1.2
+  ) +
+  geom_line(
+    aes(y = pred_proxy, color = "Respondents and cross-walked scores from proxies"),
+    size = 1.2
+  ) +
+  labs(
+    x = "Years since 2000",
+    y = "Predicted total word recall score",
+    color = "Modeling approach"
+  )  +
+  scale_color_manual(
+  breaks = c(
+    "Respondent only",
+    "Respondents only, with IPW",
+    "Respondents and cross-walked scores from proxies"
+  ),
+  labels = c(
+    "Respondent only",
+    "Respondents only, with IPW",
+    "Respondents and\ncross-walked scores from proxies"
+  ),
+  values = c(
+    "Respondent only" = "#1E152A",
+    "Respondents only, with IPW" = "#4E6766",
+    "Respondents and cross-walked scores from proxies" = "#5AB1BB"
+  )
+) +
+  theme_minimal(base_size = 14) 
+
+p
+
+# ggsave(
+#   filename = "predicted_word_recall_by_approach.png",
+#   plot = p,
+#   path = "",
+#   width = 9,
+#   height = 5,
+#   dpi = 300
+# )
+
+```
+
+
+```{r}
+#plot with ci
+get_ci_linear <- function(model, newdata) {
+  pred <- predict(model, newdata = newdata)
+  V <- vcov(model)
+  X <- model.matrix(~ time_since_2000, data = newdata)
+  se <- sqrt(diag(X %*% V %*% t(X)))
+  tibble(
+    time_since_2000 = newdata$time_since_2000,
+    pred  = pred,
+    ci_lo = pred - 1.96 * se,
+    ci_hi = pred + 1.96 * se
+  )
+}
+
+ci_resp_linear  <- get_ci_linear(gee_respondent,        newdata)
+ci_ipw_linear   <- get_ci_linear(gee_respondent_weight, newdata)
+ci_proxy_linear <- get_ci_linear(gee_respondent_proxy,  newdata)
+
+ci_combined_linear <- bind_rows(
+  ci_resp_linear  %>% mutate(type = "Respondent only"),
+  ci_ipw_linear   %>% mutate(type = "Respondents only, with IPW"),
+  ci_proxy_linear %>% mutate(type = "Respondents and cross-walked scores from proxies")
+) %>%
+  mutate(type = factor(type, levels = c(
+    "Respondent only",
+    "Respondents only, with IPW",
+    "Respondents and cross-walked scores from proxies"
+  )))
+
+
+p_linear_ci <- ggplot(ci_combined_linear,
+                      aes(x = time_since_2000, color = type, fill = type)) +
+  geom_ribbon(aes(ymin = ci_lo, ymax = ci_hi),
+              alpha = 0.15, color = NA) +
+  geom_line(aes(y = pred), size = 1.2) +
+  scale_color_manual(
+    breaks = c(
+      "Respondent only",
+      "Respondents only, with IPW",
+      "Respondents and cross-walked scores from proxies"
+    ),
+    labels = c(
+      "Respondent only",
+      "Respondents only, with IPW",
+      "Respondents and\ncross-walked scores from proxies"
+    ),
+    values = c(
+      "Respondent only"                                  = "#1E152A",
+      "Respondents only, with IPW"                       = "#4E6766",
+      "Respondents and cross-walked scores from proxies" = "#5AB1BB"
+    )
+  ) +
+  scale_fill_manual(
+    breaks = c(
+      "Respondent only",
+      "Respondents only, with IPW",
+      "Respondents and cross-walked scores from proxies"
+    ),
+    labels = c(
+      "Respondent only",
+      "Respondents only, with IPW",
+      "Respondents and\ncross-walked scores from proxies"
+    ),
+    values = c(
+      "Respondent only"                                  = "#1E152A",
+      "Respondents only, with IPW"                       = "#4E6766",
+      "Respondents and cross-walked scores from proxies" = "#5AB1BB"
+    )
+  ) +
+  labs(
+    x     = "Years since 2000",
+    y     = "Predicted total word recall score",
+    color = "Modeling approach",
+    fill  = "Modeling approach"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "bottom",
+    legend.text = element_text(size = 11)
+  )
+
+p_linear_ci
+```
+
+```{r}
+ggsave(
+  filename = "p_linear_ci.png",
+  plot = p_linear_ci,
+  width = 9,
+  height = 8,
+  dpi = 300
+)
+```
+
+
+```{r}
+#for poster
+p_linear_ci_poster <- ggplot(ci_combined_linear,
+                      aes(x = time_since_2000, color = type, fill = type)) +
+  geom_ribbon(aes(ymin = ci_lo, ymax = ci_hi),
+              alpha = 0.15, color = NA) +
+  geom_line(aes(y = pred), size = 1.2) +
+  scale_color_manual(
+    breaks = c(
+      "Respondent only",
+      "Respondents only, with IPW",
+      "Respondents and cross-walked scores from proxies"
+    ),
+    labels = c(
+      "Respondent only",
+      "Respondents only, with IPW",
+      "Respondents and\ncross-walked scores from proxies"
+    ),
+    values = c(
+      "Respondent only"                                  = "#005F73",  # teal
+      "Respondents only, with IPW"                       = "#EE9B00",  # gold
+      "Respondents and cross-walked scores from proxies" = "#BB3E03"   #rust
+    )
+  ) +
+  scale_fill_manual(
+    breaks = c(
+      "Respondent only",
+      "Respondents only, with IPW",
+      "Respondents and cross-walked scores from proxies"
+    ),
+    labels = c(
+      "Respondent only",
+      "Respondents only, with IPW",
+      "Respondents and\ncross-walked scores from proxies"
+    ),
+    values = c(
+      "Respondent only"                                  = "#005F73",
+      "Respondents only, with IPW"                       = "#EE9B00",
+      "Respondents and cross-walked scores from proxies" = "#BB3E03"
+    )
+  ) +
+  labs(
+    x     = "Years since 2000",
+    y     = "Predicted total word recall score",
+    color = "Modeling approach",
+    fill  = "Modeling approach"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "bottom",
+    legend.text = element_text(size = 11)
+  )
+p_linear_ci_poster
+
+ggsave(
+  filename = "p_linear_ci_poster.png",
+  plot = p_linear_ci_poster,
+  width = 9,
+  height = 8,
+  dpi = 300
+)
+```
+
+
+
+```{r}
+p2 <- ggplot(newdata, aes(x = time_since_2000)) +
+  geom_line(
+    aes(y = pred_resp, color = "Respondent only"),
+    size = 1.2
+  ) +
+  geom_line(
+    aes(y = pred_weight, color = "Respondents with IPW to account for selective attrition"),
+    size = 1.2
+  ) +
+  labs(
+    x = "Years since 2000",
+    y = "Predicted total word recall score",
+    color = NULL
+  ) +
+  scale_color_manual(
+    breaks = c(
+      "Respondent only",
+      "Respondents with IPW to account for selective attrition"
+    ),
+    labels = c(
+      "Respondent only",
+      "Respondents with IPW to account for selective attrition"
+    ),
+    values = c(
+      "Respondent only" = "purple",
+      "Respondents with IPW to account for selective attrition" = "orange"
+    ),
+    guide = guide_legend(ncol = 1)
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "bottom"
+  )
+
+p2
+
+# ggsave(
+#   filename = "predicted_word_recall_respondent_ipw.png",
+#   plot = p2,
+#   path = "",
+#   width = 5,
+#   height = 5,
+#   dpi = 300
+# )
+```
+
+# gee with rcs
+```{r}
+rand_respondent_long_2020 <- rand_respondent_all_long_cleaned %>%
+  filter(time_since_2000 <= 20)
+
+rand_proxy_long_2020 <- rand_respondent_all_proxy_long_cleaned %>%
+  filter(time_since_2000 <= 20)
+
+ipw_long_2020 <- ipw_weights_data %>%
+  filter(time_since_2000 <= 20)
+
+
+bk_lo  <- quantile(rand_proxy_long_2020$time_since_2000, 0.05)
+bk_hi  <- quantile(rand_proxy_long_2020$time_since_2000, 0.95)
+iknot  <- quantile(rand_proxy_long_2020$time_since_2000, 0.50)
+
+
+gee_resp_rcs <- geeglm(
+  wordtot ~ ns(time_since_2000, knots = iknot, Boundary.knots = c(bk_lo, bk_hi)),
+  id = hhidpn,
+  data = rand_respondent_long_2020,
+  family = gaussian
+)
+
+summary(gee_resp_rcs)
+
+gee_proxy_rcs <- geeglm(
+  all_score ~ ns(time_since_2000, knots = iknot, Boundary.knots = c(bk_lo, bk_hi)),
+  id = hhidpn,
+  data = rand_proxy_long_2020,
+  family = gaussian
+)
+
+summary(gee_proxy_rcs)
+
+gee_ipw_rcs <- geeglm(
+  wordtot ~ ns(time_since_2000, knots = iknot, Boundary.knots = c(bk_lo, bk_hi)),
+  id = hhidpn,
+  data = ipw_long_2020,
+  weights = ipw_weight,
+  family = gaussian
+)
+
+summary(gee_ipw_rcs)
+```
+
+```{r}
+newdata_rcs <- data.frame(time_since_2000 = seq(0, 20, by = 0.2))
+newdata_rcs$pred_resp  <- predict(gee_resp_rcs,  newdata = newdata_rcs)
+newdata_rcs$pred_proxy <- predict(gee_proxy_rcs, newdata = newdata_rcs)
+newdata_rcs$pred_ipw   <- predict(gee_ipw_rcs,   newdata = newdata_rcs)
+
+
+p_rcs<-ggplot(newdata_rcs, aes(x = time_since_2000)) +
+  geom_line(
+    aes(y = pred_resp, color = "Respondent only"),
+    size = 1.2
+  ) +
+  geom_line(
+    aes(y = pred_ipw, color = "Respondents only, with IPW"),
+    size = 1.2
+  ) +
+  geom_line(
+    aes(y = pred_proxy, color = "Respondents and cross-walked scores from proxies"),
+    size = 1.2
+  ) +
+  labs(
+    x = "Years since 2000",
+    y = "Predicted total word recall score",
+    color = "Modeling approach"
+  )  +
+  scale_color_manual(
+  breaks = c(
+    "Respondent only",
+    "Respondents only, with IPW",
+    "Respondents and cross-walked scores from proxies"
+  ),
+  labels = c(
+    "Respondent only",
+    "Respondents only, with IPW",
+    "Respondents and\ncross-walked scores from proxies"
+  ),
+  values = c(
+    "Respondent only" = "#1E152A",
+    "Respondents only, with IPW" = "#4E6766",
+    "Respondents and cross-walked scores from proxies" = "#5AB1BB"
+  )
+) +
+  theme_minimal(base_size = 14) 
+
+p_rcs
+
+```
+
+
+
+```{r}
+#calculate ci delta method
+get_ci <- function(model, newdata) {
+  
+  pred <- predict(model, newdata = newdata)
+  #get sandwich covariance matrix
+  V <- vcov(model)
+  
+  X <- model.matrix(
+    ~ ns(time_since_2000, knots = iknot, Boundary.knots = c(bk_lo, bk_hi)),
+    data = newdata
+  )
+  #delta method
+  se <- sqrt(diag(X %*% V %*% t(X)))
+
+  tibble(
+    time_since_2000 = newdata$time_since_2000,
+    pred   = pred,
+    ci_lo  = pred - 1.96 * se,
+    ci_hi  = pred + 1.96 * se
+  )
+}
+
+
+ci_resp  <- get_ci(gee_resp_rcs,  newdata_rcs)
+ci_ipw   <- get_ci(gee_ipw_rcs,   newdata_rcs)
+ci_proxy <- get_ci(gee_proxy_rcs, newdata_rcs)
+
+
+ci_combined <- bind_rows(
+  ci_resp  %>% mutate(type = "Respondent only"),
+  ci_ipw   %>% mutate(type = "Respondents only, with IPW"),
+  ci_proxy %>% mutate(type = "Respondents and cross-walked scores from proxies")
+) %>%
+  mutate(type = factor(type, levels = c(
+    "Respondent only",
+    "Respondents only, with IPW",
+    "Respondents and cross-walked scores from proxies"
+  )))
+```
+
+
+```{r}
+p_rcs_ci <- ggplot(ci_combined, 
+                   aes(x = time_since_2000, color = type, fill = type)) +
+  geom_ribbon(aes(ymin = ci_lo, ymax = ci_hi), 
+              alpha = 0.15, color = NA) +
+  geom_line(aes(y = pred), size = 1.2) +
+  scale_color_manual(
+    breaks = c(
+      "Respondent only",
+      "Respondents only, with IPW",
+      "Respondents and cross-walked scores from proxies"
+    ),
+    labels = c(
+      "Respondent only",
+      "Respondents only, with IPW",
+      "Respondents and\ncross-walked scores from proxies"
+    ),
+    values = c(
+      "Respondent only"                                  = "#1E152A",
+      "Respondents only, with IPW"                       = "#4E6766",
+      "Respondents and cross-walked scores from proxies" = "#5AB1BB"
+    )
+  ) +
+  scale_fill_manual(
+    breaks = c(
+      "Respondent only",
+      "Respondents only, with IPW",
+      "Respondents and cross-walked scores from proxies"
+    ),
+    labels = c(
+      "Respondent only",
+      "Respondents only, with IPW",
+      "Respondents and\ncross-walked scores from proxies"
+    ),
+    values = c(
+      "Respondent only"                                  = "#1E152A",
+      "Respondents only, with IPW"                       = "#4E6766",
+      "Respondents and cross-walked scores from proxies" = "#5AB1BB"
+    )
+  ) +
+  labs(
+    x     = "Years since 2000",
+    y     = "Predicted total word recall score",
+    color = "Modeling approach",
+    fill  = "Modeling approach"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "bottom",
+    legend.text = element_text(size = 11)
+  )
+
+p_rcs_ci
+```
+
+```{r}
+ggsave(
+  filename = "p_rcs_ci.png",
+  plot = p_rcs_ci,
+  width = 8,
+  height = 8,
+  dpi = 300
+)
+```
+
+
+
+######diagnosis Plot the trajectories stratified by interview mode and by HCAP###
+###Hcap##
+
+
+```{r}
+#for respondent
+#For each year from 2000 to 2022, keep only the individuals who appear in HCAP, and then calculate the mean wordtot stratified by HCAP for each year.
+hcap_ids <- unique(hcap_merged_data$hhidpn)
+mean_wordtot_df_hcap <- data.frame()
+
+for (yr in years_all2000) {
+  
+  wt_col <- paste0("wordtot_", yr)
+  
+  df <- rand_respondent_all_proxy %>%
+    mutate(hcap_group = if_else(hhidpn %in% hcap_ids, "HCAP", "Non-HCAP"))
+  
+  result <- df %>%
+    group_by(hcap_group) %>%
+    summarise(mean_wordtot = mean(.data[[wt_col]], na.rm = TRUE), .groups = "drop")
+  
+  result$year <- yr
+  
+  mean_wordtot_df_hcap <- bind_rows(mean_wordtot_df_hcap, result)
+}
+
+mean_wordtot_df_hcap <- mean_wordtot_df_hcap %>% arrange(year)
+mean_wordtot_df_hcap
+
+
+
+#Calculate the number of individuals in each year stratified by HCAP
+N_wordtot_df_hcap <- data.frame()
+
+for (yr in years_all2000) {
+  
+  wt_col <- paste0("wordtot_", yr)
+  
+  df <- rand_respondent_all_proxy %>%
+    mutate(hcap_group = if_else(hhidpn %in% hcap_ids, "HCAP", "Non-HCAP"))
+  
+  result <- df %>%
+    filter(!is.na(.data[[wt_col]])) %>%
+    group_by(hcap_group) %>%
+    summarise(N = n(), .groups = "drop")
+  
+  result$year <- yr
+  
+  N_wordtot_df_hcap <- bind_rows(N_wordtot_df_hcap, result)
+}
+
+N_wordtot_df_hcap <- N_wordtot_df_hcap %>% arrange(year)
+N_wordtot_df_hcap
+```
+
+
+
+
+
+```{r}
+#for respondent+proxy
+#For each year from 2000 to 2022, keep only the individuals who appear in HCAP, and then calculate the mean combined wordtot stratified by HCAP for each year.
+
+mean_all_df_hcap <- data.frame()
+
+for (yr in years_all2000) {
+  
+  col <- paste0("all_", yr)
+  
+  df <- rand_respondent_all_proxy %>%
+    mutate(hcap_group = if_else(hhidpn %in% hcap_ids, "HCAP", "Non-HCAP"))
+  
+  result <- df %>%
+    group_by(hcap_group) %>%
+    summarise(mean_all_wordtot = mean(.data[[col]], na.rm = TRUE), .groups = "drop")
+  
+  result$year <- yr
+  
+  mean_all_df_hcap <- bind_rows(mean_all_df_hcap, result)
+}
+mean_all_df_hcap
+
+
+
+#Calculate the number of individuals in each year stratified by HCAP
+N_all_df_hcap <- data.frame()
+
+for (yr in years_all2000) {
+  
+  col <- paste0("all_", yr)
+  
+  df <- rand_respondent_all_proxy %>%
+    mutate(hcap_group = if_else(hhidpn %in% hcap_ids, "HCAP", "Non-HCAP"))
+  
+  # count non-missing all_yr values
+  result <- df %>%
+    filter(!is.na(.data[[col]])) %>%
+    group_by(hcap_group) %>%
+    summarise(N = n(), .groups = "drop")
+  
+  result$year <- yr
+  
+  N_all_df_hcap <- bind_rows(N_all_df_hcap, result)
+}
+
+N_all_df_hcap <- N_all_df_hcap %>% arrange(year)
+N_all_df_hcap
+
+```
+
+
+
+
+
+```{r}
+#for respondent weight
+#Use the 2000 baseline data as the main dataset and merge in each ipw_data_clean_yr, so that the final dataset contains the wordtot and weight variables for each year
+df_repondent_weight <- rand_2000_respondent_clean%>%
+  select(hhidpn,wordtot_2000)
+
+for (yr in year_all) {
+  
+  df_name <- paste0("ipw_data_clean_", yr)
+  df <- get(df_name)
+  
+  word_col <- paste0("wordtot_", yr)
+  weight_new_col <- paste0("ipw_weight_", yr)
+  
+  df_sel <- df %>%
+    filter(type_of_interview == "self") %>%
+    select(
+      hhidpn,
+      !!word_col,
+      ipw_weight
+    ) %>%
+    rename(!!weight_new_col := ipw_weight)
+  
+  df_repondent_weight <- df_repondent_weight %>%
+    left_join(df_sel, by = "hhidpn")
+}
+
+df_repondent_weight<-df_repondent_weight%>%
+  mutate(ipw_weight_2000=1)
+
+
+#For each year from 2000 to 2022, keep only the individuals who appear in HCAP, and then calculate the mean weighted_wordtotal stratified by HCAP for each year.
+
+weighted_means_df_hcap <- data.frame()
+
+for (yr in years_all2000) {
+  
+  word_col   <- paste0("wordtot_", yr)
+  weight_col <- paste0("ipw_weight_", yr)
+  
+  df <- df_repondent_weight %>%
+    mutate(hcap_group = if_else(hhidpn %in% hcap_ids, "HCAP", "Non-HCAP"))
+  
+  result <- df %>%
+    group_by(hcap_group) %>%
+    summarise(
+      weighted_wordtotal_mean = weighted.mean(
+        .data[[word_col]],
+        w = .data[[weight_col]],
+        na.rm = TRUE
+      ),
+      .groups = "drop"
+    )
+  
+  result$year <- yr
+  
+  weighted_means_df_hcap <- bind_rows(weighted_means_df_hcap, result)
+}
+
+weighted_means_df_hcap
+
+```
+
+
+
+
+
+
+```{r}
+#Calculate the number of individuals in each year stratified by HCAP
+N_weighted_df_hcap <- data.frame()
+
+for (yr in years_all2000) {
+  
+  word_col   <- paste0("wordtot_", yr)
+  weight_col <- paste0("ipw_weight_", yr)
+  
+  df <- df_repondent_weight %>%
+    mutate(hcap_group = if_else(hhidpn %in% hcap_ids, "HCAP", "Non-HCAP")) %>%
+    filter(!is.na(.data[[word_col]])) %>%
+    filter(!is.na(.data[[weight_col]]))
+  
+  result <- df %>%
+    group_by(hcap_group) %>%
+    summarise(
+      N = n(),
+      .groups = "drop"
+    ) %>%
+    mutate(year = yr)
+  
+  N_weighted_df_hcap <- bind_rows(N_weighted_df_hcap, result)
+}
+
+N_weighted_df_hcap <- N_weighted_df_hcap %>% arrange(year)
+N_weighted_df_hcap
+
+```
+
+
+
+```{r}
+#Reshape and merge each dataset to prepare for plotting the trajectories stratified by interview mode and by HCAP
+
+df_self_plot <- mean_wordtot_df_hcap %>%
+  mutate(type = "Word total score excluding Proxy",
+         value = mean_wordtot) %>%
+  select(year, hcap_group, type, value)
+
+
+df_all_plot <- mean_all_df_hcap %>%
+  mutate(type = "Word total score including Proxy",
+         value = mean_all_wordtot) %>%
+  select(year, hcap_group, type, value)
+
+df_weighted_plot <- weighted_means_df_hcap %>%
+  mutate(type = "Weighted word total score",
+         value = weighted_wordtotal_mean) %>%
+  select(year, hcap_group, type, value)
+
+plot_data_combined_check <- bind_rows(df_self_plot, df_all_plot, df_weighted_plot)
+plot_data_hcap <- plot_data_combined_check  %>% filter(hcap_group == "HCAP")
+plot_data_nonhcap <- plot_data_combined_check  %>% filter(hcap_group == "Non-HCAP")
+
+plot_data_hcap$type <- factor(plot_data_hcap$type, levels = c("Word total score excluding Proxy", "Weighted word total score", "Word total score including Proxy"))
+
+plot_data_nonhcap$type <- factor(plot_data_nonhcap$type, levels = c("Word total score excluding Proxy", "Weighted word total score", "Word total score including Proxy"))
+
+#Non-HCAP plot
+
+ggplot(plot_data_nonhcap, aes(x = year, y = value,
+                              color = type, shape = type, linetype = type)) +
+  geom_line(size = 1) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c("#1E152A", "#4E6766", "#5AB1BB")) +
+  scale_shape_manual(values = c(15, 18, 17)) +
+  scale_linetype_manual(values = c("dashed", "solid", "dotdash")) +
+  scale_x_continuous(breaks = seq(2000, 2022, by = 2)) +
+  scale_y_continuous(limits = c(6, 12))+
+  theme_minimal() +
+  labs(
+    title = "Mean Word Total Score (Non-HCAP)",
+    x = NULL,
+    y = "Word Total Score",
+    color = NULL,
+    shape = NULL,
+    linetype = NULL
+  ) +
+  theme(legend.position = "bottom")
+
+#Hacp plot
+
+ggplot(plot_data_hcap, aes(x = year, y = value,
+                           color = type, shape = type, linetype = type)) +
+  geom_line(size = 1) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c("#1E152A", "#4E6766", "#5AB1BB")) +
+  scale_shape_manual(values = c(15, 18, 17)) +
+  scale_linetype_manual(values = c("dashed", "solid", "dotdash")) +
+  scale_x_continuous(breaks = seq(2000, 2022, by = 2)) +
+  scale_y_continuous(limits = c(6, 12))+
+  theme_minimal() +
+  labs(
+    title = "Mean Word Total Score (HCAP)",
+    x = NULL,
+    y = "Word Total Score",
+    color = NULL,
+    shape = NULL,
+    linetype = NULL
+  ) +
+  theme(legend.position = "bottom")
+```
+
+
+#######iwmode###
+
+
+```{r}
+#Extract the interview mode variables for each year from the Tracker file and merge them into rand_respondent_all_proxy, then check the table of iwmode for each year
+wave_years_all <- c(2000, 2002, 2004, 2006, 2008, 2010, 2012, 2014, 2016, 2018, 2020, 2022)
+wave_letters_all <- c("g", "h", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s")
+
+mode_vars <- paste0(wave_letters_all, "iwmode")
+mode_vars
+
+trkr_mode <- trkr %>%
+  select(hhidpn, all_of(mode_vars))
+
+rand_respondent_all_proxy_plot<-rand_respondent_all_proxy%>%
+  left_join(trkr_mode,by="hhidpn")
+
+for (v in mode_vars) {
+  cat("\n======", v, "======\n")
+  print(table(rand_respondent_all_proxy_plot[[v]],exclude = NULL))
+}
+
+rand_respondent_all_proxy_plot <- rand_respondent_all_proxy_plot %>%
+  mutate(giwmode = na_if(giwmode, 8))
+```
+
+
+
+```{r}
+#For respondent
+#Calculate the mean wordtot for each interview mode in each year
+mean_wordtot_df_mode <- data.frame()
+
+for (i in seq_along(wave_years_all)) {
+  
+  yr <- wave_years_all[i]
+  letter <- wave_letters_all[i]
+  
+  wt_col  <- paste0("wordtot_", yr)
+  mode_col <- paste0(letter, "iwmode")
+  
+  df <- rand_respondent_all_proxy_plot %>%
+    filter(!is.na(.data[[mode_col]])) %>%
+    mutate(
+      mode_group = recode(
+        .data[[mode_col]],
+        `1` = "Face-to-face",
+        `2` = "Telephone",
+        `3` = "Web"
+      )
+    )
+  
+  result <- df %>%
+    group_by(mode_group) %>%
+    summarise(mean_wordtot = mean(.data[[wt_col]], na.rm = TRUE), .groups = "drop") %>%
+    mutate(year = yr)
+  
+  mean_wordtot_df_mode <- bind_rows(mean_wordtot_df_mode, result)
+}
+
+mean_wordtot_df_mode <- mean_wordtot_df_mode %>% arrange(year)
+mean_wordtot_df_mode <- mean_wordtot_df_mode %>%
+  filter(!is.na(mean_wordtot))
+mean_wordtot_df_mode
+
+#We can see that for the Web interview type, the wordtot values are all NA in 2020 and 2022, and only in 2018 are there a small number of Web cases with non-NA wordtot values
+
+check_web_na<-rand_respondent_all_proxy_plot %>%
+  filter(riwmode==3)
+
+
+#Calculate the number of individuals in each year stratified by iwmode
+N_wordtot_df_mode <- data.frame()
+
+for (i in seq_along(wave_years_all)) {
+  
+  yr <- wave_years_all[i]
+  letter <- wave_letters_all[i]
+  
+  wt_col   <- paste0("wordtot_", yr)
+  mode_col <- paste0(letter, "iwmode")
+  
+  df <- rand_respondent_all_proxy_plot %>%
+    filter(!is.na(.data[[wt_col]])) %>% 
+    filter(!is.na(.data[[mode_col]])) %>%
+    mutate(
+      mode_group = recode(
+        .data[[mode_col]],
+        `1` = "Face-to-face",
+        `2` = "Telephone",
+        `3` = "Web"
+      )
+    )
+  
+  result <- df %>%
+    group_by(mode_group) %>%
+    summarise(
+      N = n(),
+      .groups = "drop"
+    ) %>%
+    mutate(year = yr)
+  
+  N_wordtot_df_mode <- bind_rows(N_wordtot_df_mode, result)
+}
+
+N_wordtot_df_mode <- N_wordtot_df_mode %>% arrange(year)
+N_wordtot_df_mode
+```
+
+
+
+
+```{r}
+#For respondent + proxy
+#Calculate the mean combined wordtot for each interview mode in each year
+mean_all_df_mode <- data.frame()
+
+
+for (i in seq_along(wave_years_all)) {
+  
+  yr<- wave_years_all[i]
+  letter <- wave_letters_all[i]
+  
+  all_col  <- paste0("all_", yr)
+  mode_col <- paste0(letter, "iwmode")
+  
+  df <- rand_respondent_all_proxy_plot %>%
+    filter(!is.na(.data[[mode_col]])) %>%
+    mutate(
+      mode_group = recode(
+        .data[[mode_col]],
+        `1` = "Face-to-face",
+        `2` = "Telephone",
+        `3` = "Web"
+      )
+    )
+  
+  result <- df %>%
+    group_by(mode_group) %>%
+    summarise(mean_all_wordtot = mean(.data[[all_col]], na.rm = TRUE),
+              .groups = "drop") %>%
+    mutate(year = yr)
+  
+  mean_all_df_mode <- bind_rows(mean_all_df_mode, result)
+}
+
+mean_all_df_mode <-mean_all_df_mode%>%
+  filter(!is.na(mean_all_wordtot))
+
+mean_all_df_mode
+
+
+
+#Calculate the number of individuals in each year stratified by iwmode
+N_all_df_mode <- data.frame()
+
+for (i in seq_along(wave_years_all)) {
+  
+  yr <- wave_years_all[i]
+  letter <- wave_letters_all[i]
+  
+  all_col  <- paste0("all_", yr)
+  mode_col <- paste0(letter, "iwmode")
+  
+  df <- rand_respondent_all_proxy_plot %>%
+    filter(!is.na(.data[[all_col]])) %>%
+    filter(!is.na(.data[[mode_col]])) %>%
+    mutate(
+      mode_group = recode(
+        .data[[mode_col]],
+        `1` = "Face-to-face",
+        `2` = "Telephone",
+        `3` = "Web"
+      )
+    )
+  
+  result <- df %>%
+    group_by(mode_group) %>%
+    summarise(
+      N = n(),
+      .groups = "drop"
+    ) %>%
+    mutate(year = yr)
+  
+  N_all_df_mode <- bind_rows(N_all_df_mode, result)
+}
+
+N_all_df_mode <- N_all_df_mode %>% arrange(year)
+N_all_df_mode
+```
+
+
+
+
+
+```{r}
+#for respondent weight
+#Merge the iwmode variables into the dataset that contains the weights
+df_repondent_weight_plot<-df_repondent_weight%>%
+  left_join(trkr_mode,by="hhidpn")
+
+for (v in mode_vars) {
+  cat("\n======", v, "======\n")
+  print(table(df_repondent_weight_plot[[v]], exclude = NULL))
+}
+
+df_repondent_weight_plot <- df_repondent_weight_plot %>%
+  mutate(giwmode = na_if(giwmode, 8))
+```
+
+
+
+
+```{r}
+#For respondent weight
+#Calculate the mean weighted_wordtotal for each interview mode in each year
+weighted_means_df_mode <- data.frame()
+
+for (i in seq_along(wave_years_all)) {
+  
+  yr<- wave_years_all[i]
+  letter <- wave_letters_all[i]
+  
+  word_col<- paste0("wordtot_", yr)
+  weight_col <- paste0("ipw_weight_", yr)
+  mode_col<- paste0(letter, "iwmode")
+
+  df <- df_repondent_weight_plot %>%
+    filter(!is.na(.data[[mode_col]])) %>%
+    mutate(
+      mode_group = recode(
+        .data[[mode_col]],
+        `1` = "Face-to-face",
+        `2` = "Telephone",
+        `3` = "Web"
+      )
+    )
+  
+  result <- df %>%
+    group_by(mode_group) %>%
+    summarise(
+      weighted_wordtotal_mean = weighted.mean(
+        .data[[word_col]],
+        w = .data[[weight_col]],
+        na.rm = TRUE
+      ),
+      .groups = "drop"
+    ) %>%
+    mutate(year = yr)
+
+  weighted_means_df_mode <- bind_rows(weighted_means_df_mode, result)
+}
+
+weighted_means_df_mode <- weighted_means_df_mode %>%
+    filter(!is.na(weighted_wordtotal_mean))
+weighted_means_df_mode
+
+
+#Calculate the number of individuals in each year stratified by iwmode
+N_weighted_df_mode <- data.frame()
+
+for (i in seq_along(wave_years_all)) {
+  
+  yr     <- wave_years_all[i]
+  letter <- wave_letters_all[i]
+  
+  word_col   <- paste0("wordtot_", yr)
+  weight_col <- paste0("ipw_weight_", yr)
+  mode_col   <- paste0(letter, "iwmode")
+  
+  df <- df_repondent_weight_plot %>%
+    filter(!is.na(.data[[word_col]])) %>% 
+    filter(!is.na(.data[[weight_col]])) %>%
+    filter(!is.na(.data[[mode_col]])) %>%
+    mutate(
+      mode_group = recode(
+        .data[[mode_col]],
+        `1` = "Face-to-face",
+        `2` = "Telephone",
+        `3` = "Web"
+      )
+    )
+  
+  result <- df %>%
+    group_by(mode_group) %>%
+    summarise(
+      N = n(),
+      .groups = "drop"
+    ) %>%
+    mutate(year = yr)
+  
+  N_weighted_df_mode <- bind_rows(N_weighted_df_mode, result)
+}
+
+N_weighted_df_mode <- N_weighted_df_mode %>% arrange(year)
+N_weighted_df_mode
+
+```
+
+
+
+
+```{r}
+#Reshape and merge each dataset to prepare for plotting the trajectories stratified by interview mode and by iwmode
+# Respondent-only mean
+df_self_plot_mode <- mean_wordtot_df_mode %>%
+  mutate(
+    type = "Word total score excluding Proxy",
+    value = mean_wordtot
+  ) %>%
+  select(year, mode_group, type, value)
+
+# Proxy + Self combined
+df_all_plot_mode <- mean_all_df_mode %>%
+  mutate(
+    type = "Word total score including Proxy",
+    value = mean_all_wordtot
+  ) %>%
+  select(year, mode_group, type, value)
+
+# IPW weighted
+df_weighted_plot_mode <- weighted_means_df_mode %>%
+  mutate(
+    type = "Weighted word total score",
+    value = weighted_wordtotal_mean
+  ) %>%
+  select(year, mode_group, type, value)
+
+# Combine all three
+plot_data_combined_mode <- bind_rows(
+  df_self_plot_mode,
+  df_all_plot_mode,
+  df_weighted_plot_mode
+)
+
+# Split into 2 mode groups
+plot_data_face <- plot_data_combined_mode %>% filter(mode_group == "Face-to-face")
+plot_data_tel  <- plot_data_combined_mode %>% filter(mode_group == "Telephone")
+
+
+# Set factor levels for the types
+level_order <- c(
+  "Word total score excluding Proxy",
+  "Weighted word total score",
+  "Word total score including Proxy"
+)
+
+plot_data_face$type <- factor(plot_data_face$type, levels = level_order)
+plot_data_tel$type  <- factor(plot_data_tel$type, levels = level_order)
+
+```
+
+
+```{r}
+#f2f
+ggplot(plot_data_face, aes(x = year, y = value,
+                           color = type, shape = type, linetype = type)) +
+  geom_line(size = 1) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c("#1E152A", "#4E6766", "#5AB1BB")) +
+  scale_shape_manual(values = c(15, 18, 17)) +
+  scale_linetype_manual(values = c("dashed", "solid", "dotdash")) +
+  scale_x_continuous(breaks = seq(2000, 2022, 2)) +
+  scale_y_continuous(limits = c(6, 12))+
+  theme_minimal() +
+  labs(
+    title = "Mean Word Total Score (Face-to-Face Interviews)",
+    x = NULL,
+    y = "Word Total Score",
+    color = NULL,
+    shape = NULL,
+    linetype = NULL
+  ) +
+  theme(legend.position = "bottom")
+
+
+
+#Telephone
+ggplot(plot_data_tel, aes(x = year, y = value,
+                          color = type, shape = type, linetype = type)) +
+  geom_line(size = 1) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c("#1E152A", "#4E6766", "#5AB1BB")) +
+  scale_shape_manual(values = c(15, 18, 17)) +
+  scale_linetype_manual(values = c("dashed", "solid", "dotdash")) +
+  scale_x_continuous(breaks = seq(2000, 2022, 2)) +
+  scale_y_continuous(limits = c(6, 12))+
+  theme_minimal() +
+  labs(
+    title = "Mean Word Total Score (Telephone Interviews)",
+    x = NULL,
+    y = "Word Total Score",
+    color = NULL,
+    shape = NULL,
+    linetype = NULL
+  ) +
+  theme(legend.position = "bottom")
+```
+
+
+
+
+
+```{r}
+
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+

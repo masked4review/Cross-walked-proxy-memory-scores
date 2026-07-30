@@ -1,0 +1,851 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-11-07"
+---
+
+
+```{r}
+library(dplyr)
+library(haven)
+library(readr)
+library(table1)
+library(tidyr)
+library(lmerTest) 
+library(broom.mixed)
+library(mice)
+library(mitools)
+library(tidyverse)
+library(ggplot2)
+library(openxlsx)
+library(flextable)
+library(equate)
+library(rsample)
+library(dplyr)
+library(purrr)
+library(broom)
+library(yardstick)
+library(polycor)
+library(splines)
+library(geepack)
+library(labelled)
+library(gtsummary)
+library(ggpubr)
+library(gt)
+library(officer)
+
+```
+
+
+```{r}
+#Read in the HCAP informant and respondent data, along with the RAND Longitudinal dataset.
+informant_data <- read_sas("hc16hp_i.sas7bdat")
+
+respondent_data <- read_sas("hc16hp_r.sas7bdat")
+
+rand <- read_sas("randhrs1992_2022v1.sas7bdat")
+
+names(informant_data) <- tolower(names(informant_data))
+names(respondent_data) <-tolower(names(respondent_data))
+names(rand) <-tolower(names(rand))
+
+
+informant_data <- informant_data %>% 
+  mutate(hhidpn = str_pad(paste(hhid, pn, sep=""),9,pad="0"))
+
+respondent_data <- respondent_data %>% 
+  mutate(hhidpn = str_pad(paste(hhid, pn, sep=""),9,pad="0"))
+
+rand <-rand %>% 
+  mutate(hhidpn = str_pad(hhidpn,9,pad="0"))
+
+
+
+
+#Filter for the demographic variables, 2016 self-rated health, marital status, and whether Alzheimer's disease or dementia was ever reported from the RAND data.
+rand_filter<-rand%>%
+  select(hhidpn,ragender,raracem,rahispan,r13mstat,r13shlt,r13alzhee,r13demene,raedyrs,raeduc)
+
+#Keep only the following variables from the respondent data: r1iflag (Respondent Informant Flag), r1word_dscore (Word List Delayed Total Score), and r1word1_score (Word List Immediate: Trial 1 score).r1age( HCAP RESPONDENT AGE AT RESPONDENT INTERVIEW)
+respondent_data_filter<-respondent_data%>%
+  select(hhidpn,r1iflag,r1word_dscore,r1word1_score,r1rage)
+
+#Keep only the following variables from the informant data: inf1rel (Informant’s relationship to the respondent), scores for Jorm questions 1 through 16, inf1jorm_score (total Jorm score), and inf1riwage (HCAP respondent age at informant interview)
+informant_data_filter<-informant_data%>%
+  select(hhidpn,inf1rel,all_of(paste0("inf1jorm", 1:16, "_score")), inf1jorm_score,inf1riwage)
+```
+
+
+```{r}
+#Convert categorical variables to factors for use in Table 1 and modeling, and regroup for some variables
+
+table(rand_filter$ragender,exclude=NULL)
+table(rand_filter$raracem,exclude=NULL)
+table(rand_filter$rahispan,exclude=NULL)
+table(rand_filter$r13mstat,exclude=NULL) 
+table(rand_filter$r13shlt,exclude=NULL)
+table(rand_filter$raeduc,exclude=NULL)
+table(rand_filter$r13alzhee,exclude=NULL)
+table(rand_filter$r13demene,exclude=NULL)
+
+
+#sex/gender
+rand_filter$ragender_f = factor(rand_filter$ragender, 
+                                       levels = c(1,2), 
+                                       labels = c("Male","Female"))
+
+#race
+rand_filter$raracem_f = factor(rand_filter$raracem, 
+                                      levels = c(1,2,3), 
+                                      labels = c("White","Black","Other"))
+
+
+#Hispanic
+rand_filter$rahispan_f = factor(rand_filter$rahispan, 
+                                       levels = c(0,1), 
+                                       labels = c("Not Hispanic","Hispanic"))
+
+#marital status
+rand_filter$r13mstat_f <-ifelse(
+  rand_filter$r13mstat==1|rand_filter$r13mstat==2|rand_filter$r13mstat==3,1,0)
+
+rand_filter$r13mstat_f = factor(rand_filter$r13mstat_f, 
+                                       levels = c(1,0), 
+                                       labels = c("Married/partnered","Not married/partnered"))
+
+
+#self rate health
+rand_filter$r13shlt_f<-ifelse(rand_filter$r13shlt==4|rand_filter$r13shlt==5,1,0)
+rand_filter$r13shlt_f = factor(rand_filter$r13shlt_f, 
+                                       levels = c(0,1), 
+                                       labels = c("Excellent/very good/good","Fair/poor"))
+
+#education
+rand_filter$raeduc_f <- case_when(
+  rand_filter$raeduc == 1 ~ "Lt High-school",
+  rand_filter$raeduc == 2 ~ "GED",
+  rand_filter$raeduc == 3 ~ "High-school graduate",
+  rand_filter$raeduc == 4 ~ "Some college",
+  rand_filter$raeduc == 5 ~ "College and above",
+  TRUE ~ NA
+)
+
+#"High-school graduate" was used as the reference group, it has the largest number of participants
+rand_filter$raeduc_f <- factor(rand_filter$raeduc_f,
+                                levels = c("High-school graduate", 
+                                           "Lt High-school", 
+                                           "GED", 
+                                           "Some college", 
+                                           "College and above"))
+
+#Alzheimer's disease 
+rand_filter <- rand_filter %>%
+  mutate(r13alzhee_f = case_when(
+    r13alzhee == 0 ~ "No",
+    r13alzhee == 1 ~ "Yes"
+  ),
+  r13alzhee_f = factor(r13alzhee_f, levels = c("No", "Yes")))
+
+#dementia
+rand_filter <- rand_filter %>%
+  mutate(r13demene_f = case_when(
+    r13demene == 0 ~ "No",
+    r13demene == 1 ~ "Yes"
+  ),
+  r13demene_f = factor(r13demene_f, levels = c("No", "Yes")))
+
+
+table(rand_filter$ragender_f,exclude=NULL)
+table(rand_filter$raracem_f,exclude=NULL)
+table(rand_filter$rahispan_f,exclude=NULL)
+table(rand_filter$r13mstat_f,exclude=NULL)
+table(rand_filter$r13shlt_f, exclude=NULL)
+table(rand_filter$raeduc_f,exclude=NULL)
+table(rand_filter$r13alzhee_f,exclude=NULL)
+table(rand_filter$r13demene_f,exclude=NULL)
+
+
+
+#Informant’s relationship to the respondent
+table(informant_data_filter$inf1rel,exclude=NULL)
+
+informant_data_filter <- informant_data_filter %>%
+  mutate(inf1rel_grouped = case_when(
+    inf1rel == 1 ~ "spouse/partner",
+    inf1rel == 2 ~ "child",
+    inf1rel == 3 ~ "grandchild",
+    inf1rel == 4 ~ "sibling",
+    inf1rel %in% c(5, 6, 7, 8, 97) ~ "other",
+    TRUE ~ NA
+  ),
+  inf1rel_grouped = factor(inf1rel_grouped,
+                           levels = c("spouse/partner", "child", "grandchild", "sibling", "other")))
+
+
+
+table(informant_data_filter$inf1rel_grouped,exclude=NULL)
+
+```
+
+
+```{r}
+#Use informant_data_filter as the main table and merge it with respondent_data_filter and rand_filter. Since the subsequent analyses mainly focus on informant-related data, informant_data_filter is used as the main dataset.
+
+hcap_merged_data<-informant_data_filter%>%
+  left_join(respondent_data_filter,by="hhidpn")%>%
+  left_join(rand_filter,by="hhidpn")
+
+# saveRDS(hcap_merged_data,
+#         file = "hcap_merged_data.rds")
+
+#Keep only people where r1iflag = 1 (Respondent and Informant)
+table(hcap_merged_data$r1iflag,exclude=NULL)
+
+respondent_informant_data<-hcap_merged_data%>%
+  filter(r1iflag==1)
+#3034
+
+#Check for missing values in the scores
+summary(respondent_informant_data$inf1jorm_score)
+summary(respondent_informant_data$r1word_dscore)
+summary(respondent_informant_data$r1word1_score)
+
+#The two age variables are basically the same, so either one can be used.
+summary(respondent_informant_data$r1rage)
+summary(respondent_informant_data$inf1riwage)
+```
+
+
+
+```{r}
+respondent_informant_data_filter<-respondent_informant_data%>%
+  select(
+    inf1riwage,ragender_f,raracem_f,rahispan_f,r13mstat_f,r13shlt_f,inf1rel_grouped)%>%
+  set_variable_labels(inf1riwage='Age at analytic baseline (years)',
+                      ragender_f='Gender',
+                      raracem_f='Race',
+                      rahispan_f="Hispanic",
+                      r13mstat_f= 'Marital status at analytic baseline',
+                      r13shlt_f='Self-rated health at analytic baseline',
+                      inf1rel_grouped="Proxy type"
+                      )
+
+
+tab1_respondent_informant <- respondent_informant_data_filter%>%  
+  tbl_summary(missing = "ifany", 
+              missing_text="Missing",
+        type = list(
+      all_continuous() ~ "continuous",
+      all_categorical() ~ "categorical"
+    ),
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})",
+      all_categorical() ~ "{n} ({p}%)"
+    ),
+    digits = list(
+      all_continuous() ~ 1,
+      all_categorical() ~ c(0,1)
+    )) %>%
+  add_stat_label(location = "row") %>%
+  modify_column_indent(columns=label, indent=0) %>%
+  bold_labels()
+
+tab1_respondent_informant 
+
+# gtsave(
+#   tab1_respondent_informant %>% as_gt(),
+#   file = "tab1_respondent_informant.html"
+# )
+```
+
+
+```{r}
+#Read in the RAND Core 2016 data to compare the delayed word recall score in HCAP with the one in Core, since the immediate word recall in HCAP includes three trials, which may affect the word delayed score
+
+rand_2016 <- read_sas("h16f2c.sas7bdat")
+names(rand_2016) <-tolower(names(rand_2016))
+rand_2016 <-rand_2016 %>% 
+  mutate(hhidpn = str_pad(hhidpn,9,pad="0"))
+
+#Keep only the 2016 delayed word recall score from Core and HCAP, then merge the two datasets
+hcap_rand2016 <- respondent_informant_data %>%
+  select(hhidpn, r1word_dscore) %>%
+  inner_join(rand_2016 %>% select(hhidpn, pd184), by = "hhidpn")
+
+```
+
+
+```{r}
+#Check for missing values in the delayed word recall scores from Core and HCAP, and remove any records with missing values to ensure both scores are present
+summary(hcap_rand2016$pd184)
+summary(hcap_rand2016$r1word_dscore)
+#pd184 missing:n=91
+
+hcap_rand2016_filtered <- hcap_rand2016 %>% 
+  filter(!is.na(pd184) & !is.na(r1word_dscore))
+#n=2943
+
+#Save this dataset for subsequent EPE analysis
+
+# saveRDS(hcap_rand2016_filtered,
+#         file = "hcap_rand2016_filtered.rds")
+
+
+#Prepare the data for an overlaid histogram and create the overlaid histogram plot.
+plot_data <- hcap_rand2016_filtered %>%
+  pivot_longer(cols = -hhidpn, names_to = "variable", values_to = "score") %>%
+  mutate(variable = recode(variable,
+                           pd184 = "2016 HRS core survey",
+                           r1word_dscore = "2016 HRS-HCAP"))
+
+
+p1 <- ggplot(plot_data, aes(x = score, fill = variable)) +
+  geom_histogram(aes(y = after_stat(count)), 
+                 position = "identity", bins = 10, alpha = 0.5) +
+  scale_fill_manual(
+    values = c("2016 HRS core survey" = "steelblue",
+               "2016 HRS-HCAP"        = "tomato"),
+    breaks = c("2016 HRS core survey", "2016 HRS-HCAP")
+  )  +
+  labs(
+    x = "Delayed word recall score",
+    y = "Count",
+    fill = "Variable"
+  ) +
+  theme_minimal()
+
+p1
+
+# ggsave(
+#   filename = "Overlaid Histograms of delayed recall 2016.png",
+#   plot = p1,
+#   bg = "white"
+# )
+```
+
+
+# 2022
+```{r}
+#Read in the 2022 HCAP data and use the 2022 wordtot as the cross-validation test set
+informant_data_2022 <- read_csv("Hc22hp_i.csv")
+
+respondent_data_2022 <- read_csv("Hc22hp_r.csv")
+
+rand <- read_sas("randhrs1992_2022v1.sas7bdat")
+
+
+names(informant_data_2022) <- tolower(names(informant_data_2022))
+names(respondent_data_2022) <-tolower(names(respondent_data_2022))
+names(rand) <-tolower(names(rand))
+
+informant_data_2022 <- informant_data_2022 %>% 
+  mutate(hhidpn = str_pad(paste(hhid, pn, sep=""),9,pad="0"))
+
+respondent_data_2022 <- respondent_data_2022 %>% 
+  mutate(hhidpn = str_pad(paste(hhid, pn, sep=""),9,pad="0"))
+
+rand <-rand %>% 
+  mutate(hhidpn = str_pad(hhidpn,9,pad="0"))
+```
+
+
+```{r}
+#Filter for the demographic variables, 2022 self-rated health, marital status, and whether Alzheimer's disease or dementia was ever reported from the RAND data.
+rand_filter_2022<-rand%>%
+  select(hhidpn,ragender,raracem,rahispan,r16mstat,r16shlt,r16alzhee,r16demene,raedyrs,raeduc)
+
+
+#Keep only the following variables from the respondent data: r2iflag (Respondent Informant Flag), r2word_dscore (Word List Delayed Total Score), and r2word1_score (Word List Immediate: Trial 1 score).r2age( HCAP RESPONDENT AGE AT RESPONDENT INTERVIEW)
+respondent_data_2022_filter<-respondent_data_2022%>%
+  select(hhidpn,r2iflag,r2word_dscore,r2word1_score,r2rage)
+
+#Keep only the following variables from the informant data: inf2rel (Informant’s relationship to the respondent), scores for Jorm questions 1 through 16, inf2jorm_score (total Jorm score), and inf2riwage (HCAP respondent age at informant interview)
+informant_data_2022_filter<-informant_data_2022%>%
+  select(hhidpn,inf2rel,all_of(paste0("inf2jorm", 1:16, "_score")), inf2jorm_score,inf2riwage)
+
+```
+
+
+```{r}
+#Convert categorical variables to factors for use in Table 1 and modeling, and regroup for some variables
+
+table(rand_filter_2022$ragender,exclude=NULL)
+table(rand_filter_2022$raracem,exclude=NULL)
+table(rand_filter_2022$rahispan,exclude=NULL)
+table(rand_filter_2022$r16mstat,exclude=NULL) 
+table(rand_filter_2022$r16shlt,exclude=NULL)
+table(rand_filter_2022$raeduc,exclude=NULL)
+table(rand_filter_2022$r16alzhee,exclude=NULL)
+table(rand_filter_2022$r16demene,exclude=NULL)
+
+
+#sex/gender
+rand_filter_2022$ragender_f = factor(rand_filter_2022$ragender, 
+                                       levels = c(1,2), 
+                                       labels = c("Male","Female"))
+
+#race
+rand_filter_2022$raracem_f = factor(rand_filter_2022$raracem, 
+                                      levels = c(1,2,3), 
+                                      labels = c("White","Black","Other"))
+
+#Hispanic
+rand_filter_2022$rahispan_f = factor(rand_filter_2022$rahispan, 
+                                       levels = c(0,1), 
+                                       labels = c("Not Hispanic","Hispanic"))
+
+#marital status
+rand_filter_2022$r16mstat_f <-ifelse(
+  rand_filter_2022$r16mstat==1|rand_filter_2022$r16mstat==2|rand_filter_2022$r16mstat==3,1,0)
+
+rand_filter_2022$r16mstat_f = factor(rand_filter_2022$r16mstat_f, 
+                                       levels = c(1,0), 
+                                       labels = c("Married/partnered","Not married/partnered"))
+
+
+#self rate health
+rand_filter_2022$r16shlt_f<-ifelse(rand_filter_2022$r16shlt==4|rand_filter_2022$r16shlt==5,1,0)
+rand_filter_2022$r16shlt_f = factor(rand_filter_2022$r16shlt_f, 
+                                       levels = c(0,1), 
+                                       labels = c("Excellent/very good/good","Fair/poor"))
+
+#education
+rand_filter_2022$raeduc_f <- case_when(
+  rand_filter_2022$raeduc == 1 ~ "Lt High-school",
+  rand_filter_2022$raeduc == 2 ~ "GED",
+  rand_filter_2022$raeduc == 3 ~ "High-school graduate",
+  rand_filter_2022$raeduc == 4 ~ "Some college",
+  rand_filter_2022$raeduc == 5 ~ "College and above",
+  TRUE ~ NA
+)
+
+
+
+#"High-school graduate" was used as the reference group, it has the largest number of participants
+rand_filter_2022$raeduc_f <- factor(rand_filter_2022$raeduc_f,
+                                levels = c("High-school graduate", 
+                                           "Lt High-school", 
+                                           "GED", 
+                                           "Some college", 
+                                           "College and above"))
+
+#Alzheimer's disease 
+rand_filter_2022 <- rand_filter_2022 %>%
+  mutate(r16alzhee_f = case_when(
+    r16alzhee == 0 ~ "No",
+    r16alzhee == 1 ~ "Yes"
+  ),
+  r16alzhee_f = factor(r16alzhee_f, levels = c("No", "Yes")))
+
+#dementia
+rand_filter_2022 <- rand_filter_2022 %>%
+  mutate(r16demene_f = case_when(
+    r16demene == 0 ~ "No",
+    r16demene == 1 ~ "Yes"
+  ),
+  r16demene_f = factor(r16demene_f, levels = c("No", "Yes")))
+
+
+table(rand_filter_2022$ragender_f,exclude=NULL)
+table(rand_filter_2022$raracem_f,exclude=NULL)
+table(rand_filter_2022$rahispan_f,exclude=NULL)
+table(rand_filter_2022$r16mstat_f,exclude=NULL)
+table(rand_filter_2022$r16shlt_f, exclude=NULL)
+table(rand_filter_2022$raeduc_f,exclude=NULL)
+table(rand_filter_2022$r16alzhee_f,exclude=NULL)
+table(rand_filter_2022$r16demene_f,exclude=NULL)
+
+
+
+```
+
+```{r}
+#Informant’s relationship to the respondent
+table(informant_data_2022_filter$inf2rel,exclude=NULL)
+
+informant_data_2022_filter<- informant_data_2022_filter%>%
+  mutate(inf2rel_grouped = case_when(
+    inf2rel == 1 ~ "spouse/partner",
+    inf2rel == 2 ~ "child",
+    inf2rel == 3 ~ "grandchild",
+    inf2rel == 4 ~ "sibling",
+    inf2rel %in% c(5, 6, 7, 8, 97) ~ "other",
+    TRUE ~ NA
+  ),
+  inf2rel_grouped = factor(inf2rel_grouped,
+                           levels = c("spouse/partner", "child", "grandchild", "sibling", "other")))
+
+
+
+table(informant_data_2022_filter$inf2rel_grouped,exclude=NULL)
+```
+
+
+
+```{r}
+#Use informant_data_2022_filteras the main table and merge it with respondent_data_filter and rand_filter_2022. Since the subsequent analyses mainly focus on informant-related data, informant_data_2022_filteris used as the main dataset.
+
+hcap_merged_data_2022<-informant_data_2022_filter%>%
+  left_join(respondent_data_2022_filter,by="hhidpn")%>%
+  left_join(rand_filter_2022,by="hhidpn")
+
+# saveRDS(hcap_merged_data_2022,
+#         file = "hcap_merged_data_2022.rds")
+
+
+#Keep only people where r2iflag = 1 (Respondent and Informant)
+table(hcap_merged_data_2022$r2iflag,exclude=NULL)
+
+respondent_informant_data_2022<-hcap_merged_data_2022%>%
+  filter(r2iflag==1)
+#2699
+
+#Check for missing values in the scores
+summary(respondent_informant_data_2022$inf2jorm_score)
+summary(respondent_informant_data_2022$r2word_dscore)
+summary(respondent_informant_data_2022$r2word1_score)
+
+#The two age variables are basically the same, so either one can be used.
+summary(respondent_informant_data_2022$r2rage)
+summary(respondent_informant_data_2022$inf2riwage)
+```
+
+
+
+```{r}
+#remove the NAs of the scores
+check_na<-respondent_informant_data_2022 %>%
+  filter(is.na(r2word_dscore))
+
+respondent_informant_data_2022_filter <- respondent_informant_data_2022 %>%
+  filter(
+    !is.na(inf2jorm_score),
+    !is.na(r2word_dscore),
+    !is.na(r2word1_score)
+  )
+#n=2687
+```
+
+
+
+```{r}
+respondent_informant_data_2022_table1<-respondent_informant_data_2022_filter%>%
+  select(
+    inf2riwage,ragender_f,raracem_f,rahispan_f,r16mstat_f,r16shlt_f,inf2rel_grouped)%>%
+  set_variable_labels(inf2riwage='Age at analytic baseline (years)',
+                      ragender_f='Gender',
+                      raracem_f='Race',
+                      rahispan_f="Hispanic",
+                      r16mstat_f= 'Marital status at analytic baseline',
+                      r16shlt_f='Self-rated health at analytic baseline',
+                      inf2rel_grouped="Proxy type"
+                      )
+
+
+tab1_respondent_informant_2022 <- respondent_informant_data_2022_table1%>%  
+  tbl_summary(missing = "ifany", 
+              missing_text="Missing",
+        type = list(
+      all_continuous() ~ "continuous",
+      all_categorical() ~ "categorical"
+    ),
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})",
+      all_categorical() ~ "{n} ({p}%)"
+    ),
+    digits = list(
+      all_continuous() ~ 1,
+      all_categorical() ~ c(0,1)
+    )) %>%
+  add_stat_label(location = "row") %>%
+  modify_column_indent(columns=label, indent=0) %>%
+  bold_labels()
+
+tab1_respondent_informant_2022 
+
+# gtsave(
+#   tab1_respondent_informant_2022 %>% as_gt(),
+#   file = "tab1_respondent_informant_2022.html"
+# )
+```
+
+
+
+
+```{r}
+#Read in the RAND Core 2022 data to compare the delayed word recall score in HCAP with the one in Core, since the immediate word recall in HCAP includes three trials, which may affect the word delayed score
+
+rand_2022 <- read_sas("h22e3a.sas7bdat")
+names(rand_2022) <-tolower(names(rand_2022))
+rand_2022 <-rand_2022 %>% 
+  mutate(hhidpn = str_pad(hhidpn,9,pad="0"))
+
+#Keep only the 2022 delayed word recall score from Core and HCAP, then merge the two datasets
+hcap_rand2022 <- respondent_informant_data_2022_filter %>%
+  select(hhidpn, r2word_dscore) %>%
+  inner_join(rand_2022 %>% select(hhidpn, sd184), by = "hhidpn")
+```
+
+
+```{r}
+#Check for missing values in the delayed word recall scores from Core and HCAP, and remove any records with missing values to ensure both scores are present
+summary(hcap_rand2022$sd184)
+summary(hcap_rand2022$r2word_dscore)
+#sd184 missing:n=469
+
+hcap_rand2022_filtered <- hcap_rand2022 %>%
+  filter(!is.na(sd184) & !is.na(r2word_dscore))
+#n=2218
+
+#Save this dataset for subsequent EPE analysis
+
+# saveRDS(hcap_rand2022_filtered,
+#         file = "hcap_rand2022_filtered.rds")
+
+
+#Prepare the data for an overlaid histogram and create the overlaid histogram plot.
+plot_data2022 <- hcap_rand2022_filtered %>%
+  pivot_longer(cols = -hhidpn, names_to = "variable", values_to = "score") %>%
+  mutate(variable = recode(variable,
+                           sd184 = "Core 2022 Word Delayed Recall Score",
+                           r2word_dscore = "HCAP Word Delayed Recall Score"))
+
+
+p1_2022 <- ggplot(plot_data2022, aes(x = score, fill = variable)) +
+  geom_histogram(aes(y = after_stat(count)), 
+                 position = "identity", bins = 10, alpha = 0.5) +
+  scale_fill_manual(values = c("steelblue", "tomato")) +
+  scale_y_continuous(
+    breaks = c(0, 300, 600, 900)
+  ) +
+  labs(
+    title = "Overlaid Histograms of Word Delayed Recall Scores (2022)",
+    x = "Score",
+    y = "Count",
+    fill = "Variable"
+  ) +
+  theme_minimal()
+
+p1_2022
+
+# ggsave(
+#   filename = "Overlaid Histograms of delayed recall (2022).png",
+#   plot = p1_2022,
+#   bg = "white"
+# )
+```
+
+
+```{r}
+#Table 1 for 2016 HCAP sample using in CV
+#from analysis.rmd
+respondent_informant_data_score_cleaned <- readRDS(
+  "respondent_informant_data_score_cleaned.rds"
+)
+
+```
+
+
+```{r}
+table(respondent_informant_data_score_cleaned$rahispan,respondent_informant_data_score_cleaned$raracem,exclude=NULL)
+
+respondent_informant_data_score_cleaned <-
+  respondent_informant_data_score_cleaned %>%
+  mutate(
+    race_ethnicity = case_when(
+      rahispan == 1 ~ 3L,                       # Hispanic
+      rahispan == 0 & raracem == 1 ~ 1L,        # NH White
+      rahispan == 0 & raracem == 2 ~ 2L,        # NH Black
+      rahispan == 0 & raracem == 3 ~ 4L,        # NH Other
+      TRUE ~ NA
+    )
+  )%>%
+  mutate(
+    race_ethnicity_f = factor(
+      race_ethnicity,
+      levels = c(1, 2, 3, 4),
+      labels = c("NH White", "NH Black", "Hispanic", "NH Other")
+    )
+  )
+
+
+table(respondent_informant_data_score_cleaned$race_ethnicity_f,exclude=NULL)
+```
+
+
+
+```{r}
+respondent_informant_data_score_cleaned_table1<-respondent_informant_data_score_cleaned%>%
+  select(
+    inf1riwage,ragender_f,race_ethnicity_f,r13mstat_f,r13shlt_f,inf1rel_grouped,raedyrs,r13demene_f)%>%
+  set_variable_labels(inf1riwage='Age (years)',
+                      ragender_f='Gender',
+                      race_ethnicity_f='Race/ethnicity',
+                      r13mstat_f= 'Marital status',
+                      r13shlt_f='Self-rated health',
+                      inf1rel_grouped="Proxy type",
+                      raedyrs="Years of education",
+                      r13demene_f="Dementia status"
+                      )
+
+tab1_2016_cv <- respondent_informant_data_score_cleaned_table1%>%  
+  tbl_summary(missing = "ifany", 
+              missing_text="Missing",
+        type = list(
+      all_continuous() ~ "continuous",
+      all_categorical() ~ "categorical"
+    ),
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})",
+      all_categorical() ~ "{n} ({p}%)"
+    ),
+    digits = list(
+      all_continuous() ~ 1,
+      all_categorical() ~ c(0,1)
+    )) %>%
+  add_stat_label(location = "row") %>%
+  modify_column_indent(columns=label, indent=0) %>%
+  bold_labels()
+
+tab1_2016_cv 
+
+# gtsave(
+#   tab1_2016_cv %>% as_gt(),
+#   file = "tab1_2016_hcap_cv.html"
+# )
+
+```
+
+
+```{r}
+ft_tab1_2016_cv <- gtsummary::as_flex_table(tab1_2016_cv) %>%
+  flextable::autofit() %>%
+  flextable::set_table_properties(layout = "autofit") %>%
+  flextable::fontsize(size = 10, part = "all") %>%
+  flextable::line_spacing(space = 1, part = "all") %>%
+  flextable::font(fontname = "Times New Roman", part = "all")
+
+
+
+# read_docx() %>%
+#   body_add_flextable(value = ft_tab1_2016_cv) %>%
+#   print(target = "formatted_tab1_2016_hcap_cv.docx")
+```
+
+
+
+```{r}
+#Table 1 for 2022 HCAP sample using as test in cv
+#from analysis.rmd
+respondent_informant_data_score_cleaned_2022 <- readRDS(
+  "respondent_informant_data_score_cleaned_2022.rds"
+)
+```
+
+
+```{r}
+table(respondent_informant_data_score_cleaned_2022$rahispan,respondent_informant_data_score_cleaned_2022$raracem,exclude=NULL)
+
+respondent_informant_data_score_cleaned_2022 <-
+  respondent_informant_data_score_cleaned_2022 %>%
+  mutate(
+    race_ethnicity = case_when(
+      rahispan == 1 ~ 3L,                       # Hispanic
+      rahispan == 0 & raracem == 1 ~ 1L,        # NH White
+      rahispan == 0 & raracem == 2 ~ 2L,        # NH Black
+      rahispan == 0 & raracem == 3 ~ 4L,        # NH Other
+      TRUE ~ NA
+    )
+  )%>%
+  mutate(
+    race_ethnicity_f = factor(
+      race_ethnicity,
+      levels = c(1, 2, 3, 4),
+      labels = c("NH White", "NH Black", "Hispanic", "NH Other")
+    )
+  )
+
+
+table(respondent_informant_data_score_cleaned_2022$race_ethnicity_f,exclude=NULL)
+```
+
+
+```{r}
+respondent_informant_data_score_cleaned_2022_table1<-respondent_informant_data_score_cleaned_2022%>%
+  select(
+    inf2riwage,ragender_f,race_ethnicity_f,r16mstat_f,r16shlt_f,inf2rel_grouped,raedyrs,r16demene_f)%>%
+  set_variable_labels(inf2riwage='Age (years)',
+                      ragender_f='Gender',
+                      race_ethnicity_f='Race/ethnicity',
+                      r16mstat_f= 'Marital status',
+                      r16shlt_f='Self-rated health',
+                      inf2rel_grouped="Proxy type",
+                      raedyrs="Years of education",
+                      r16demene_f="Dementia status"
+                      )
+
+tab1_2022_test <- respondent_informant_data_score_cleaned_2022_table1%>%  
+  tbl_summary(missing = "ifany", 
+              missing_text="Missing",
+        type = list(
+      all_continuous() ~ "continuous",
+      all_categorical() ~ "categorical"
+    ),
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})",
+      all_categorical() ~ "{n} ({p}%)"
+    ),
+    digits = list(
+      all_continuous() ~ 1,
+      all_categorical() ~ c(0,1)
+    )) %>%
+  add_stat_label(location = "row") %>%
+  modify_column_indent(columns=label, indent=0) %>%
+  bold_labels()
+
+tab1_2022_test 
+
+# gtsave(
+#   tab1_2022_test %>% as_gt(),
+#   file = "tab1_2022_hcap_test.html"
+# )
+```
+
+
+
+
+```{r}
+ft_tab1_2022_test <- gtsummary::as_flex_table(tab1_2022_test) %>%
+  flextable::autofit() %>%
+  flextable::set_table_properties(layout = "autofit") %>%
+  flextable::fontsize(size = 10, part = "all") %>%
+  flextable::line_spacing(space = 1, part = "all") %>%
+  flextable::font(fontname = "Times New Roman", part = "all")
+
+
+
+# read_docx() %>%
+#   body_add_flextable(value = ft_tab1_2022_test) %>%
+#   print(target = "formatted_tab1_2022_hcap_test.docx")
+```
+
+
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+

@@ -1,0 +1,659 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-09-22"
+---
+
+```{r}
+library(dplyr)
+library(haven)
+library(readr)
+library(table1)
+library(tidyr)
+library(broom.mixed)
+library(stringr)
+library(ggplot2)
+library(polycor)
+```
+
+
+```{r}
+rand_2000 <- read_sas("h00f1d.sas7bdat")
+```
+
+
+```{r}
+adams_dat <- read_dta("ADAMS1AG_R.dta")
+```
+
+
+
+```{r}
+names(rand_2000) <-tolower(names(rand_2000))
+names(adams_dat) <-tolower(names(adams_dat))
+
+
+rand_2000 <-rand_2000 %>% 
+  mutate(hhidpn = str_pad(hhidpn,9,pad="0"))
+
+adams_dat<-adams_dat%>%
+  mutate(hhidpn = str_pad(paste(hhid, pn, sep=""),9,pad="0"))
+
+```
+
+
+```{r}
+adams_dat_filter<-adams_dat%>%
+  select(hhidpn,agq101,agq14,agq15,agq16,agq17,agq18,agq19,agq20,agq21,agq22,agq23,agq24,
+         agq25,agq26,agq27,agq28,agq29)
+```
+
+
+```{r}
+adams_dat_filter <- adams_dat_filter %>%
+  rowwise() %>%
+  mutate(adams_jorm_score = round(mean(c_across(agq14:agq29), na.rm = TRUE),3)) %>%
+  ungroup()
+
+```
+
+
+```{r}
+table(adams_dat_filter$adams_jorm_score,exclude=NULL)
+```
+
+
+```{r}
+table(adams_dat_filter$agq101,exclude=NULL)
+```
+
+```{r}
+check <- adams_dat_filter %>%
+  filter(agq101 == 15)
+
+check2 <- adams_dat_filter %>%
+  filter(is.nan(adams_jorm_score))
+
+```
+
+
+
+```{r}
+adams_dat_filter <- adams_dat_filter %>%
+  mutate(agq101_group = case_when(
+    agq101 == 1 ~ "spouse",
+    agq101 %in% c(2, 5) ~ "child",
+    agq101 %in% c(3, 4, 6, 7, 8, 9, 10, 13) ~ "other",
+    TRUE ~ NA_character_
+  ))
+
+table(adams_dat_filter$agq101_group,exclude=NULL)
+```
+
+
+
+```{r}
+rand_2000_filter<-rand_2000%>%
+  select(hhidpn,g514,g947,g1101,
+         g1543,g1544,g1545,
+         g1548,g1549,g1550,
+         g1553,g1554,g1555,
+         g1558,g1559,g1560,
+         g1563,g1564,g1565,
+         g1568,g1569,g1570,
+         g1573,g1574,g1575,
+         g1578,g1579,g1580,
+         g1583,g1584,g1585,
+         g1588,g1589,g1590,
+         g1593,g1594,g1595,
+         g1598,g1599,g1600,
+         g1602,g1603,g1604,
+         g1605,g1606,g1607,
+         g1608,g1609,g1610,
+         g1611,g1612,g1613)
+```
+
+
+```{r}
+table(rand_2000_filter$g947,exclude=NULL)
+```
+
+```{r}
+table(rand_2000_filter$g947,rand_2000_filter$g514,exclude=NULL)
+```
+
+
+```{r}
+spouse_proxy <- rand_2000_filter$hhidpn[rand_2000_filter$g514 == 2]
+table(rand_2000_filter$g947[rand_2000_filter$hhidpn %in% spouse_proxy], exclude=NULL)
+```
+
+```{r}
+rand_2000_filter$g947[rand_2000_filter$hhidpn %in% spouse_proxy] <- 1
+table(rand_2000_filter$g947[rand_2000_filter$hhidpn %in% spouse_proxy], exclude=NULL)
+table(rand_2000_filter$g947,exclude=NULL)
+```
+
+```{r}
+rand_2000_filter <- rand_2000_filter %>%
+  mutate(g947_regroup = case_when(
+    g947 == 1 ~ "spouse",
+    g947 %in% c(2, 3, 4, 5) ~ "child",
+    g947 %in% c(6, 7, 8, 9, 10, 11, 12, 13) ~ "other",
+    TRUE ~ NA
+  ))
+
+table(rand_2000_filter$g947_regroup,exclude=NULL)
+```
+
+```{r}
+rand_2000_filter <- rand_2000_filter %>%
+  filter(!is.na(g947_regroup))
+```
+
+
+
+```{r}
+rand_2000_score <- rand_2000_filter
+
+start_vars <- c(1543, 1548, 1553, 1558, 1563, 1568,
+                         1573, 1578, 1583, 1588, 1593, 1598,
+                         1602, 1605, 1608, 1611)
+
+
+for (i in seq_along(start_vars)) {
+  d_a <- paste0("g", start_vars[i])
+  d_b <- paste0("g", start_vars[i] + 1)
+  d_c <- paste0("g", start_vars[i] + 2)
+  
+  score_var <- paste0("j", i, "score")
+  
+  rand_2000_score <- rand_2000_score %>%
+    mutate(
+      !!score_var := case_when(
+        .data[[d_a]] == 2 ~ 3,
+        .data[[d_b]] == 1 ~ 1,
+        .data[[d_b]] == 2 ~ 2,
+        .data[[d_c]] == 4 ~ 4,
+        .data[[d_c]] == 5 ~ 5,
+        TRUE ~ NA_real_
+      )
+    )
+}
+```
+
+
+```{r}
+names(rand_2000_score)
+```
+
+
+```{r}
+rand_2000_score <- rand_2000_score %>%
+  rowwise() %>%
+  mutate(jorm_score_2000 = round(
+    mean(c_across(starts_with("j") & ends_with("score")), na.rm = TRUE), 3
+  )) %>%
+  ungroup()
+```
+
+
+```{r}
+summary(rand_2000_score$jorm_score_2000)
+```
+
+
+```{r}
+final_data_2000<-rand_2000_score%>%
+  inner_join(adams_dat_filter,by="hhidpn")
+```
+
+
+```{r}
+table(final_data_2000$agq101,final_data_2000$g514,exclude=NULL)
+```
+
+
+```{r}
+final_data_2000_filter <- final_data_2000 %>%
+  filter(agq101 != 15, g514 %in% c(2, 3))
+
+```
+
+
+```{r}
+names(final_data_2000_filter)
+```
+
+```{r}
+summary(final_data_2000_filter$jorm_score_2000)
+summary(final_data_2000_filter$adams_jorm_score)
+```
+
+
+
+
+```{r}
+table(final_data_2000_filter$agq101_group,final_data_2000_filter$g947_regroup,exclude=NULL)
+```
+
+```{r}
+final_data_matched <- final_data_2000_filter %>%
+  filter(agq101_group == g947_regroup)
+```
+
+
+```{r}
+table(final_data_matched$jorm_score_2000)
+table(final_data_matched$adams_jorm_score)
+```
+
+
+```{r}
+final_data_child <- final_data_matched %>%
+  filter(agq101_group == "child", g947_regroup == "child")
+
+final_data_other <- final_data_matched %>%
+  filter(agq101_group == "other", g947_regroup == "other")
+
+final_data_spouse <- final_data_matched %>%
+  filter(agq101_group == "spouse", g947_regroup == "spouse")
+```
+
+
+```{r}
+cor_overall<- cor(final_data_matched$adams_jorm_score, final_data_matched$jorm_score_2000, method = "pearson")
+cor_overall
+
+cor_child<- cor(final_data_child$adams_jorm_score, final_data_child$jorm_score_2000, method = "pearson")
+cor_child
+
+cor_other<- cor(final_data_other$adams_jorm_score, final_data_other$jorm_score_2000, method = "pearson")
+cor_other
+
+cor_spouse<- cor(final_data_spouse$adams_jorm_score, final_data_spouse$jorm_score_2000, method = "pearson")
+cor_spouse
+```
+
+```{r}
+# final_data_matched$adams_jorm_score <- as.ordered(final_data_matched$adams_jorm_score)
+# final_data_matched$jorm_score_2000 <- as.ordered(final_data_matched$jorm_score_2000)
+```
+
+
+```{r}
+cor_overall <- polychor(final_data_matched$adams_jorm_score, final_data_matched$jorm_score_2000)
+cor_overall
+
+cor_child <- polychor(final_data_child$adams_jorm_score, final_data_child$jorm_score_2000)
+cor_child
+
+cor_other <- polychor(final_data_other$adams_jorm_score, final_data_other$jorm_score_2000)
+cor_other
+
+cor_spouse <- polychor(final_data_spouse$adams_jorm_score, final_data_spouse$jorm_score_2000)
+cor_spouse
+
+```
+
+```{r}
+names(final_data_matched)
+```
+
+
+```{r}
+var1 <- paste0("agq", 14:29) 
+cor_overall_p <- c()
+
+for (i in 1:16) {
+  var2 <- paste0("j", i, "score")
+  
+  cor_val <- cor(final_data_matched[[var1[i]]], final_data_matched[[var2]],
+                 method = "pearson", use = "complete.obs")
+  
+  cor_overall_p[i] <- cor_val
+
+}
+
+names(cor_overall_p) <- paste0("cor_", 1:16)
+cor_overall_p
+
+```
+
+
+```{r}
+var1 <- paste0("agq", 14:29) 
+cor_overall_poly <- c()
+
+for (i in 1:16) {
+  var2 <- paste0("j", i, "score")
+
+  x <- final_data_matched[[var1[i]]]
+  y <- final_data_matched[[var2]]
+
+  complete_idx <- complete.cases(x, y)
+  x <- x[complete_idx]
+  y <- y[complete_idx]
+
+  cor_val <- polychor(x, y)
+
+  cor_overall_poly[i] <- cor_val
+}
+
+names(cor_overall_poly) <- paste0("cor_", 1:16)
+
+cor_overall_poly
+
+```
+
+
+```{r}
+var1 <- paste0("agq", 14:29) 
+cor_child_p <- c()
+
+for (i in 1:16) {
+  var2 <- paste0("j", i, "score")
+  
+  cor_val <- cor(final_data_child[[var1[i]]], final_data_child[[var2]],
+                 method = "pearson", use = "complete.obs")
+  
+  cor_child_p[i] <- cor_val
+}
+
+names(cor_child_p) <- paste0("cor_", 1:16)
+cor_child_p
+```
+
+
+```{r}
+var1 <- paste0("agq", 14:29) 
+cor_child_poly <- c()
+
+for (i in 1:16) {
+  var2 <- paste0("j", i, "score")
+
+  x <- final_data_child[[var1[i]]]
+  y <- final_data_child[[var2]]
+
+  complete_idx <- complete.cases(x, y)
+  x <- x[complete_idx]
+  y <- y[complete_idx]
+
+  cor_val <- polychor(x, y)
+
+  cor_child_poly[i] <- cor_val
+}
+
+names(cor_child_poly) <- paste0("cor_", 1:16)
+
+cor_child_poly
+
+```
+
+
+
+```{r}
+var1 <- paste0("agq", 14:29) 
+cor_other_p <- c()
+
+for (i in 1:16) {
+  var2 <- paste0("j", i, "score")
+  
+  cor_val <- cor(final_data_other[[var1[i]]],final_data_other[[var2]], 
+                 method = "pearson", use = "complete.obs")
+  
+  cor_other_p[i] <- cor_val
+}
+
+names(cor_other_p) <- paste0("cor_", 1:16)
+cor_other_p
+```
+
+
+```{r}
+var1 <- paste0("agq", 14:29) 
+cor_other_poly <- c()
+
+for (i in 1:16) {
+  var2 <- paste0("j", i, "score")
+
+  x <- final_data_other[[var1[i]]]
+  y <- final_data_other[[var2]]
+
+  complete_idx <- complete.cases(x, y)
+  x <- x[complete_idx]
+  y <- y[complete_idx]
+
+  cor_val <- polychor(x, y)
+
+  cor_other_poly[i] <- cor_val
+}
+
+names(cor_other_poly) <- paste0("cor_", 1:16)
+
+cor_other_poly
+
+```
+
+
+
+```{r}
+var1 <- paste0("agq", 14:29)
+cor_spouse_p <- c()
+
+for (i in 1:16) {
+  var2 <- paste0("j", i, "score")
+  
+  cor_val <- cor(final_data_spouse[[var1[i]]],final_data_spouse[[var2]], 
+                 method = "pearson", use = "complete.obs")
+  
+  cor_spouse_p[i] <- cor_val
+}
+
+names(cor_spouse_p) <- paste0("cor_", 1:16)
+cor_spouse_p
+```
+
+
+```{r}
+var1 <- paste0("agq", 14:29) 
+cor_spouse_poly <- c()
+
+for (i in 1:16) {
+  var2 <- paste0("j", i, "score")
+
+  x <- final_data_spouse[[var1[i]]]
+  y <- final_data_spouse[[var2]]
+
+  complete_idx <- complete.cases(x, y)
+  x <- x[complete_idx]
+  y <- y[complete_idx]
+
+  cor_val <- polychor(x, y)
+
+  cor_spouse_poly[i] <- cor_val
+}
+
+names(cor_spouse_poly) <- paste0("cor_", 1:16)
+
+cor_spouse_poly
+
+```
+
+
+```{r}
+question_labels <- tolower(c(
+  "Remembering things about family",
+  "Remembering recent events",
+  "Recalling conversations",
+  "Remembering address/phone number",
+  "Remembering date",
+  "Remembering where things are kept",
+  "Remembering where to find things",
+  "Knowing how to work familiar things",
+  "Learning to use a new gadgets",
+  "Learning new things in general",
+  "Following a story",
+  "Making everyday decisions",
+  "Handling money for shopping",
+  "Handling financial matters",
+  "Everyday arithmetic problems",
+  "Intelligence for reasoning"
+))
+
+result_df_pearson <- data.frame(
+  Question = question_labels,
+  Overall = rep(NA, 16),
+  Proxy_Child = rep(NA, 16),
+  Proxy_Other = rep(NA, 16),
+  Proxy_Spouse = rep(NA, 16)
+)
+
+
+
+result_df_pearson$Overall <- cor_overall_p
+result_df_pearson$Proxy_Child <- cor_child_p
+result_df_pearson$Proxy_Other <- cor_other_p
+result_df_pearson$Proxy_Spouse <- cor_spouse_p
+
+avg_row <- colMeans(result_df_pearson[, -1])
+avg_row <- c("average score", avg_row)
+result_df_pearson <- rbind(result_df_pearson, avg_row)
+
+```
+
+
+```{r}
+# write.csv(result_df_pearson,
+#           file = "cor_result_2000_pearson.csv",
+#           row.names = FALSE)
+
+```
+
+
+```{r}
+question_labels <- tolower(c(
+  "Remembering things about family",
+  "Remembering recent events",
+  "Recalling conversations",
+  "Remembering address/phone number",
+  "Remembering date",
+  "Remembering where things are kept",
+  "Remembering where to find things",
+  "Knowing how to work familiar things",
+  "Learning to use a new gadgets",
+  "Learning new things in general",
+  "Following a story",
+  "Making everyday decisions",
+  "Handling money for shopping",
+  "Handling financial matters",
+  "Everyday arithmetic problems",
+  "Intelligence for reasoning"
+))
+
+result_df_poly<- data.frame(
+  Question = question_labels,
+  Overall = rep(NA, 16),
+  Proxy_Child = rep(NA, 16),
+  Proxy_Other = rep(NA, 16),
+  Proxy_Spouse = rep(NA, 16)
+)
+
+
+result_df_poly$Overall <- cor_overall_poly
+result_df_poly$Proxy_Child <- cor_child_poly
+result_df_poly$Proxy_Other <- cor_other_poly
+result_df_poly$Proxy_Spouse <- cor_spouse_poly
+
+avg_row <- colMeans(result_df_poly[, -1])
+avg_row <- c("average score", avg_row)
+result_df_poly <- rbind(result_df_poly, avg_row)
+```
+
+
+```{r}
+# write.csv(result_df_poly,
+#           file = "cor_result_2000_poly.csv",
+#           row.names = FALSE)
+```
+
+
+
+```{r}
+p<-ggplot(final_data_matched, aes(x = adams_jorm_score, y = jorm_score_2000)) +
+  geom_point() +
+  labs(title="Overall", x = "Adams score",
+       y = "Core score")+
+  theme_minimal()
+
+p
+```
+
+```{r}
+# ggsave(
+#   filename = "scatter_overall_2000.png",
+#   plot = p,
+#   bg = "white"
+# )
+```
+
+
+
+```{r}
+p2<-ggplot(final_data_child, aes(x = adams_jorm_score, y = jorm_score_2000)) +
+  geom_point() +
+  labs(title="Child", x = "Adams score",
+       y = "Core score")+
+  theme_minimal()
+
+p2
+```
+
+```{r}
+# ggsave(
+#   filename = "scatter_child_2000.png",
+#   plot = p2,
+#   bg = "white"
+# )
+```
+
+
+
+```{r}
+p3<-ggplot(final_data_other, aes(x = adams_jorm_score, y = jorm_score_2000)) +
+  geom_point() +
+  labs(title="Other", x = "Adams score",
+       y = "Core score")+
+  theme_minimal()
+
+p3
+```
+
+```{r}
+# ggsave(
+#   filename = "scatter_other_2000.png",
+#   plot = p3,
+#   bg = "white"
+# )
+```
+
+
+
+```{r}
+p4<-ggplot(final_data_spouse, aes(x = adams_jorm_score, y = jorm_score_2000)) +
+  geom_point() +
+  labs(title="Spouse", x = "Adams score",
+       y = "Core score")+
+  theme_minimal()
+
+p4
+```
+
+```{r}
+# ggsave(
+#   filename = "scatter_spouse_2000.png",
+#   plot = p4,
+#   bg = "white"
+# )
+```
+
